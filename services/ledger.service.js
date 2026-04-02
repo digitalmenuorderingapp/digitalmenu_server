@@ -16,6 +16,16 @@ exports.normalizeToISTMidnight = (date) => {
 exports.recordTransaction = async ({ order, type, amount, mode, status = 'PENDING' }) => {
   try {
     const transactionDate = exports.normalizeToISTMidnight(order.createdAt);
+
+    // IDEMPOTENCY GUARD: Prevent duplicate REFUND transactions for the same order.
+    // A refund should only ever be recorded once per order.
+    if (type === 'REFUND') {
+      const existingRefund = await LedgerTransaction.findOne({ orderId: order._id, type: 'REFUND' });
+      if (existingRefund) {
+        console.warn(`[LedgerService] Duplicate REFUND blocked for order: ${order._id}. Existing TX: ${existingRefund._id}`);
+        return existingRefund;
+      }
+    }
     
     // Calculate Monthly Running Balance (Resets on 1st of every month)
     const startOfMonth = new Date(transactionDate.getFullYear(), transactionDate.getMonth(), 1);

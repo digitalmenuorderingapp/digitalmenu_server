@@ -609,6 +609,11 @@ exports.rejectOrder = async (req, res, next) => {
       });
     }
 
+    // Guard against double-processing if the order was already rejected
+    if (order.status === 'rejected') {
+      return res.status(400).json({ success: false, message: 'Order is already rejected' });
+    }
+
     order.status = 'rejected';
     order.rejectionReason = reason || 'Order rejected by admin';
     
@@ -691,6 +696,11 @@ exports.cancelOrder = async (req, res, next) => {
         success: false,
         message: 'Can only cancel orders that have not been approved yet'
       });
+    }
+
+    // Guard against double-processing if the order was already cancelled
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ success: false, message: 'Order is already cancelled' });
     }
 
     order.status = 'cancelled';

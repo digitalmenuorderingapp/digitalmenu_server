@@ -68,4 +68,11 @@ const ledgerTransactionSchema = new mongoose.Schema({
 
 ledgerTransactionSchema.index({ restaurant: 1, transactionDate: -1 });
 
+// Prevent duplicate REFUND transactions for the same order at the DB level.
+// This acts as the final guard even under concurrent requests.
+ledgerTransactionSchema.index(
+  { orderId: 1, type: 1 },
+  { unique: true, partialFilterExpression: { type: 'REFUND' }, sparse: true }
+);
+
 module.exports = mongoose.model('LedgerTransaction', ledgerTransactionSchema);
