@@ -14,7 +14,7 @@ const app = express();
 app.set('trust proxy', 1); // Trust first proxy (Render/Vercel)
 const server = http.createServer(app);
 const allowedOrigins = [
-  'https://digitalmenuorder.vercel.app'  // Hardcoded production URL
+  'https://digitalmenuorder.vercel.app', 'https://digitalmenu-superadmin.vercel.app'  // Hardcoded production URL
 
 ].filter(origin => origin && typeof origin === 'string')
   .map(origin => origin.trim().replace(/\/$/, ''));
@@ -23,7 +23,7 @@ const allowedOrigins = [
 const checkOrigin = (origin, callback) => {
   // Allow requests with no origin (like mobile apps or curl)
   if (!origin) return callback(null, true);
-  
+
   const normalizedOrigin = origin.trim().replace(/\/$/, '');
   if (allowedOrigins.includes(normalizedOrigin)) {
     callback(null, true);
@@ -54,7 +54,7 @@ app.set('io', io);
 // Socket.io connection logic
 io.on('connection', (socket) => {
   // console.log(`[Socket] Client connected: ${socket.id}`);
-  
+
   socket.on('join', (room) => {
     socket.join(room);
     // console.log(`[Socket] ${socket.id} joined room: ${room}`);
@@ -88,12 +88,12 @@ const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digitalmenu');
     console.log(`MongoDB Connected`);
-    
+
     // Ensure Superadmin Account
     const Superadmin = require('./models/Superadmin');
     const superadminEmail = 'sahin401099@gmail.com';
     const existingSuperadmin = await Superadmin.findOne({ email: superadminEmail });
-    
+
     if (!existingSuperadmin) {
       console.log('--- CREATING SUPERADMIN ACCOUNT ---');
       await Superadmin.create({
@@ -111,7 +111,7 @@ const connectDB = async () => {
 connectDB().then(() => {
   // Initialize cron jobs
   initCron();
-  
+
   // Start periodic service status emission to superadmin
   const { emitServiceStatus } = require('./controllers/superadmin.controller');
   setInterval(() => {
@@ -125,12 +125,12 @@ setInterval(async () => {
   try {
     const RestaurantAdmin = require('./models/RestaurantAdmin');
     const Superadmin = require('./models/Superadmin');
-    
+
     const markedRestaurantOffline = await RestaurantAdmin.markInactiveDevicesOffline();
     const markedSuperadminOffline = await Superadmin.markInactiveDevicesOffline();
-    
+
     const totalMarked = (markedRestaurantOffline?.modifiedCount || 0) + (markedSuperadminOffline?.modifiedCount || 0);
-    
+
     if (totalMarked > 0) {
       console.log(`[OfflineSync] Marked ${totalMarked} devices as offline`);
     }
