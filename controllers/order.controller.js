@@ -67,16 +67,15 @@ exports.createOrder = async (req, res, next) => {
     if (io) {
       const targetId = restaurantId || req.userId;
       const roomId = targetId?.toString();
-      console.log(`[Socket DEBUG] Emitting newOrder:`);
-      console.log(`  - restaurantId from body: ${restaurantId}`);
-      console.log(`  - req.userId: ${req.userId}`);
-      console.log(`  - targetId: ${targetId}`);
-      console.log(`  - roomId (toString): ${roomId}`);
-      console.log(`  - io exists: ${!!io}`);
+      
+      // Emit to admin for notification and sound
       io.to(roomId).emit('newOrder', order);
-      console.log(`  - Event emitted to room: ${roomId}`);
-    } else {
-      console.warn('[Socket DEBUG] io not available, cannot emit newOrder');
+      
+      // Emit to admin for instant state synchronization
+      const enrichedOrder = await getEnrichedOrder(order);
+      io.to(roomId).emit('orderUpdate', enrichedOrder);
+      
+      console.log(`[Socket] New order emitted to room: ${roomId}`);
     }
 
     // Return enriched order
