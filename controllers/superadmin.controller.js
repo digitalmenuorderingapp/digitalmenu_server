@@ -17,31 +17,31 @@ const platformThroughputHistory = [];
 let lastLogCount = 0;
 
 setInterval(async () => {
-    try {
-        const metrics = await getMetrics();
-        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        
-        systemMetricsHistory.push({
-            time: timeStr,
-            cpu: metrics.cpuUsage || 0,
-            mem: metrics.memoryUsage ? (metrics.memoryUsage.heapUsed / 1024 / 1024) : 0
-        });
-        if (systemMetricsHistory.length > 60) systemMetricsHistory.shift();
+  try {
+    const metrics = await getMetrics();
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        // Calculate a light throughput metric by checking DB action shifts
-        const currentLogs = await AuditLog.countDocuments();
-        const requestsSinceLast = Math.max(0, currentLogs - lastLogCount);
-        if (lastLogCount === 0) { lastLogCount = currentLogs; } else { lastLogCount = currentLogs; }
+    systemMetricsHistory.push({
+      time: timeStr,
+      cpu: metrics.cpuUsage || 0,
+      mem: metrics.memoryUsage ? (metrics.memoryUsage.heapUsed / 1024 / 1024) : 0
+    });
+    if (systemMetricsHistory.length > 60) systemMetricsHistory.shift();
 
-        platformThroughputHistory.push({
-            time: timeStr,
-            requests: requestsSinceLast
-        });
-        if (platformThroughputHistory.length > 60) platformThroughputHistory.shift();
+    // Calculate a light throughput metric by checking DB action shifts
+    const currentLogs = await AuditLog.countDocuments();
+    const requestsSinceLast = Math.max(0, currentLogs - lastLogCount);
+    if (lastLogCount === 0) { lastLogCount = currentLogs; } else { lastLogCount = currentLogs; }
 
-    } catch (e) {
-        // Silent fail for background telemetry
-    }
+    platformThroughputHistory.push({
+      time: timeStr,
+      requests: requestsSinceLast
+    });
+    if (platformThroughputHistory.length > 60) platformThroughputHistory.shift();
+
+  } catch (e) {
+    // Silent fail for background telemetry
+  }
 }, 5000);
 
 // In-memory OTP storage for superadmin (sahin401099@gmail.com)
@@ -87,7 +87,7 @@ const accessCookieOptions = {
 const requestOTP = async (req, res) => {
   try {
     const { email } = req.body;
-    
+
     // Strict Hardcoded check for superadmin
     if (email !== 'sahin401099@gmail.com') {
       return res.status(403).json({ success: false, message: 'Unauthorized email' });
@@ -150,7 +150,7 @@ const verifyOTP = async (req, res) => {
     // Find or bootstrap superadmin in DB
     let user = await Superadmin.findOne({ email });
     if (!user) {
-        user = await Superadmin.create({ email });
+      user = await Superadmin.create({ email });
     }
 
     // Clear memory OTP
@@ -165,7 +165,7 @@ const verifyOTP = async (req, res) => {
 
     // Clear old tokens for this device or append new one
     if (!user.refreshTokens) user.refreshTokens = [];
-    
+
     // Find if device already exists
     const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceId);
     const tokenData = {
@@ -218,7 +218,7 @@ const getSystemStats = async (req, res) => {
   try {
     const metrics = await getMetrics();
     const dbSize = await mongoose.connection.db.stats();
-    
+
     // Active counts
     const activeSocketCount = req.app.get('io') ? req.app.get('io').engine.clientsCount : 0;
 
@@ -279,7 +279,7 @@ const getServiceStatus = async (req, res) => {
         api_key: process.env.CLOUDINARY_API_KEY,
         api_secret: process.env.CLOUDINARY_API_SECRET
       });
-      
+
       // Get usage stats
       const usage = await cloudinary.api.usage();
       cloudinaryStatus = 'operational';
@@ -288,8 +288,8 @@ const getServiceStatus = async (req, res) => {
         limit: (usage.storage?.limit / 1024 / 1024 || 0).toFixed(2) + ' MB',
         bandwidth: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
         requests: usage.requests?.usage || 0,
-        percentage: usage.storage?.limit 
-          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1) 
+        percentage: usage.storage?.limit
+          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1)
           : 0
       };
     } catch (cloudinaryError) {
@@ -324,7 +324,7 @@ const getServiceStatus = async (req, res) => {
  */
 const emitServiceStatus = async (io) => {
   if (!io) return;
-  
+
   try {
     // Check MongoDB
     const mongoState = mongoose.connection.readyState;
@@ -342,7 +342,7 @@ const emitServiceStatus = async (io) => {
           collections: dbStats.collections,
           documents: dbStats.objects
         };
-      } catch (e) {}
+      } catch (e) { }
     }
 
     // Check Cloudinary
@@ -362,8 +362,8 @@ const emitServiceStatus = async (io) => {
         limit: (usage.storage?.limit / 1024 / 1024 || 0).toFixed(2) + ' MB',
         bandwidth: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
         requests: usage.requests?.usage || 0,
-        percentage: usage.storage?.limit 
-          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1) 
+        percentage: usage.storage?.limit
+          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1)
           : 0
       };
     } catch (e) {
@@ -394,7 +394,7 @@ const getRestaurants = async (req, res) => {
 
     // Enriched restaurants for the dashboard
     const today = new Date();
-    today.setHours(0,0,0,0);
+    today.setHours(0, 0, 0, 0);
 
     const enrichedRestaurants = await Promise.all(restaurants.map(async (r) => {
       const ordersToday = await Order.countDocuments({
@@ -422,11 +422,11 @@ const getRestaurants = async (req, res) => {
 const getAnalytics = async (req, res) => {
   try {
     const today = new Date();
-    today.setHours(0,0,0,0);
+    today.setHours(0, 0, 0, 0);
 
     const totalOrdersToday = await Order.countDocuments({ createdAt: { $gte: today } });
     const newUsersToday = await RestaurantAdmin.countDocuments({ createdAt: { $gte: today } });
-    
+
     // Revenue trend (Approx)
     const orders = await Order.find({ createdAt: { $gte: today }, status: 'served' });
     const revenueToday = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
@@ -434,37 +434,41 @@ const getAnalytics = async (req, res) => {
     // Get real last 7 days data for charts
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(today.getDate() - 6);
-    sevenDaysAgo.setHours(0,0,0,0);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
 
     const weeklyDataMap = {};
     for (let i = 0; i < 7; i++) {
-        const d = new Date(sevenDaysAgo);
-        d.setDate(d.getDate() + i);
-        const dayStr = d.toLocaleDateString('en-US', { weekday: 'short' });
-        weeklyDataMap[dayStr] = { name: dayStr, orders: 0, users: 0, date: d.toISOString().split('T')[0] };
+      const d = new Date(sevenDaysAgo);
+      d.setDate(d.getDate() + i);
+      const dayStr = d.toLocaleDateString('en-US', { weekday: 'short' });
+      weeklyDataMap[dayStr] = { name: dayStr, orders: 0, users: 0, date: d.toISOString().split('T')[0] };
     }
 
     const weeklyOrders = await Order.aggregate([
-        { $match: { createdAt: { $gte: sevenDaysAgo } } },
-        { $group: {
-            _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
-            count: { $sum: 1 }
-        }}
+      { $match: { createdAt: { $gte: sevenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
+          count: { $sum: 1 }
+        }
+      }
     ]);
 
     const weeklyUsers = await RestaurantAdmin.aggregate([
-        { $match: { createdAt: { $gte: sevenDaysAgo } } },
-        { $group: {
-            _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
-            count: { $sum: 1 }
-        }}
+      { $match: { createdAt: { $gte: sevenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
+          count: { $sum: 1 }
+        }
+      }
     ]);
 
     Object.values(weeklyDataMap).forEach(dayObj => {
-        const orderMatch = weeklyOrders.find(o => o._id === dayObj.date);
-        if (orderMatch) dayObj.orders = orderMatch.count;
-        const userMatch = weeklyUsers.find(u => u._id === dayObj.date);
-        if (userMatch) dayObj.restaurants = userMatch.count;
+      const orderMatch = weeklyOrders.find(o => o._id === dayObj.date);
+      if (orderMatch) dayObj.orders = orderMatch.count;
+      const userMatch = weeklyUsers.find(u => u._id === dayObj.date);
+      if (userMatch) dayObj.restaurants = userMatch.count;
     });
 
     const weeklyData = Object.values(weeklyDataMap);
@@ -492,7 +496,7 @@ const getAnalytics = async (req, res) => {
 const getOrdersOverview = async (req, res) => {
   try {
     const today = new Date();
-    today.setHours(0,0,0,0);
+    today.setHours(0, 0, 0, 0);
 
     const stats = await Order.aggregate([
       { $match: { createdAt: { $gte: today } } },
@@ -536,7 +540,7 @@ const getOrdersOverview = async (req, res) => {
 const getRestaurantDetail = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Validate ObjectId to prevent CastError
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ success: false, message: 'Invalid ID format' });
@@ -544,7 +548,7 @@ const getRestaurantDetail = async (req, res) => {
 
     // Strictly sanitize restaurant object - exclude sensitive or internal fields
     const restaurant = await RestaurantAdmin.findById(id).select('restaurantName ownerName email subscription lastActivity requestCount createdAt');
-    
+
     if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
 
     const totalOrders = await Order.countDocuments({ restaurant: id });
@@ -577,8 +581,8 @@ const updateRestaurantStatus = async (req, res) => {
     const { restaurantId } = req.params;
     const { status } = req.body; // Expecting 'active' or 'inactive'
 
-    const restaurant = await RestaurantAdmin.findByIdAndUpdate(restaurantId, { 
-      $set: { 'subscription.status': status } 
+    const restaurant = await RestaurantAdmin.findByIdAndUpdate(restaurantId, {
+      $set: { 'subscription.status': status }
     }, { new: true });
 
     if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
@@ -604,10 +608,10 @@ const updateSubscription = async (req, res) => {
   try {
     const { userId } = req.params;
     const { subscription } = req.body;
-    
+
     // Update the nested subscription object
-    const restaurant = await RestaurantAdmin.findByIdAndUpdate(userId, { 
-      $set: { subscription } 
+    const restaurant = await RestaurantAdmin.findByIdAndUpdate(userId, {
+      $set: { subscription }
     }, { new: true });
 
     if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
@@ -632,7 +636,7 @@ const updateSubscription = async (req, res) => {
 const refreshSuperadminToken = async (req, res) => {
   try {
     const { refreshToken } = req.cookies;
-    
+
     if (!refreshToken) {
       return res.status(401).json({ success: false, message: 'No refresh token provided' });
     }
@@ -643,22 +647,22 @@ const refreshSuperadminToken = async (req, res) => {
     } catch (jwtError) {
       return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
     }
-    
+
     const user = await Superadmin.findById(decoded.id);
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'Superadmin not found' });
     }
-    
+
     const tokenHash = hashToken(refreshToken);
     const tokenDoc = user.refreshTokens.find(t => t.tokenHash === tokenHash);
-    
+
     if (!tokenDoc || tokenDoc.revokedAt) {
       return res.status(401).json({ success: false, message: 'Invalid session (token mismatch or revoked)' });
     }
 
     const tokens = generateSuperadminTokens(user._id);
-    
+
     // Update token in array
     tokenDoc.tokenHash = hashToken(tokens.refreshToken);
     tokenDoc.lastSeen = new Date();
@@ -707,7 +711,7 @@ const logout = async (req, res) => {
 const getAuditLogs = async (req, res) => {
   try {
     const { type, status, search, page = 1, limit = 20 } = req.query;
-    
+
     // Build filter query
     const filter = {};
     if (type) filter.type = type;
@@ -718,18 +722,18 @@ const getAuditLogs = async (req, res) => {
         { user: { $regex: search, $options: 'i' } }
       ];
     }
-    
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
+
     // Get logs with pagination
     const logs = await AuditLog.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
-    
+
     // Get total count for pagination
     const total = await AuditLog.countDocuments(filter);
-    
+
     res.json({
       success: true,
       logs,
@@ -757,15 +761,15 @@ const getCloudinaryStats = async (req, res) => {
       api_key: process.env.CLOUDINARY_API_KEY,
       api_secret: process.env.CLOUDINARY_API_SECRET
     });
-    
+
     // Get usage stats
     const usage = await cloudinary.api.usage();
-    
+
     // Calculate storage metrics
     const storageUsed = usage.storage?.usage || 0;
     const storageLimit = usage.storage?.limit || 0;
     const percentage = storageLimit > 0 ? ((storageUsed / storageLimit) * 100).toFixed(1) : 0;
-    
+
     res.json({
       success: true,
       cloudinary: {
@@ -789,8 +793,8 @@ const getCloudinaryStats = async (req, res) => {
     });
   } catch (error) {
     console.error('Cloudinary stats error:', error.message);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to fetch Cloudinary stats',
       cloudinary: {
         status: 'error',

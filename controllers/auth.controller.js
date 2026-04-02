@@ -23,20 +23,20 @@ const generateTokens = (userId) => {
   return { accessToken, refreshToken };
 };
 
-const isProduction = process.env.NODE_ENV === 'production';
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 
 // Cookie options
 const cookieOptions = {
   httpOnly: true,
-  secure: isProduction, // Render/Vercel support HTTPS
-  sameSite: isProduction ? 'none' : 'lax', // Required for cross-site (Vercel -> Render)
+  secure: true, // Force secure for production-ready cross-site support
+  sameSite: 'none', // Required for cross-site (Vercel -> Render)
   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 };
 
 const accessCookieOptions = {
   httpOnly: true,
-  secure: isProduction,
-  sameSite: isProduction ? 'none' : 'lax',
+  secure: true,
+  sameSite: 'none',
   maxAge: 15 * 60 * 1000 // 15 minutes
 };
 
