@@ -606,11 +606,11 @@ const updateRestaurantStatus = async (req, res) => {
  */
 const updateSubscription = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { restaurantId } = req.params;
     const { subscription } = req.body;
 
     // Update the nested subscription object
-    const restaurant = await RestaurantAdmin.findByIdAndUpdate(userId, {
+    const restaurant = await RestaurantAdmin.findByIdAndUpdate(restaurantId, {
       $set: { subscription }
     }, { new: true });
 
