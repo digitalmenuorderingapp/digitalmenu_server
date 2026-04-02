@@ -542,10 +542,10 @@ exports.collectCash = async (req, res, next) => {
       });
     }
 
-    if (order.cashCollected) {
+    if (order.paymentStatus === 'VERIFIED') {
       return res.status(400).json({
         success: false,
-        message: 'Cash already marked as collected'
+        message: 'Order already marked as paid'
       });
     }
 
@@ -611,6 +611,17 @@ exports.rejectOrder = async (req, res, next) => {
 
     order.status = 'rejected';
     order.rejectionReason = reason || 'Order rejected by admin';
+    
+    // Auto-Refund if it was already verified
+    if (order.paymentStatus === 'VERIFIED') {
+      order.refund = {
+        status: 'refunded',
+        method: order.paymentMethod,
+        amount: order.totalAmount,
+        processedAt: new Date()
+      };
+    }
+    
     await order.save();
 
     const enrichedOrder = await getEnrichedOrder(order);
@@ -626,16 +637,18 @@ exports.rejectOrder = async (req, res, next) => {
     }
 
     // Financial Logic: Revert the payment with a REFUND transaction
-    try {
-      await ledgerService.recordTransaction({
-        order,
-        type: 'REFUND',
-        amount: -order.totalAmount,
-        mode: order.paymentMethod,
-        status: 'VERIFIED' // Reversal is immediate
-      });
-    } catch (ledgerError) {
-      console.error('Failed to record reversal:', ledgerError);
+    if (order.paymentStatus === 'VERIFIED') {
+      try {
+        await ledgerService.recordTransaction({
+          order,
+          type: 'REFUND',
+          amount: -order.totalAmount,
+          mode: order.paymentMethod,
+          status: 'VERIFIED' // Reversal is immediate
+        });
+      } catch (ledgerError) {
+        console.error('Failed to record reversal:', ledgerError);
+      }
     }
 
 
@@ -682,19 +695,32 @@ exports.cancelOrder = async (req, res, next) => {
 
     order.status = 'cancelled';
     order.cancellationReason = reason || bodyReason || 'Order cancelled by customer';
+    
+    // Auto-Refund if it was already verified
+    if (order.paymentStatus === 'VERIFIED') {
+      order.refund = {
+        status: 'refunded',
+        method: order.paymentMethod,
+        amount: order.totalAmount,
+        processedAt: new Date()
+      };
+    }
+    
     await order.save();
 
     // Financial Logic: Revert the payment with a REFUND transaction
-    try {
-      await ledgerService.recordTransaction({
-        order,
-        type: 'REFUND',
-        amount: -order.totalAmount,
-        mode: order.paymentMethod,
-        status: 'VERIFIED'
-      });
-    } catch (ledgerError) {
-      console.error('Failed to record reversal on cancellation:', ledgerError);
+    if (order.paymentStatus === 'VERIFIED') {
+      try {
+        await ledgerService.recordTransaction({
+          order,
+          type: 'REFUND',
+          amount: -order.totalAmount,
+          mode: order.paymentMethod,
+          status: 'VERIFIED'
+        });
+      } catch (ledgerError) {
+        console.error('Failed to record reversal on cancellation:', ledgerError);
+      }
     }
 
     const enrichedOrder = await getEnrichedOrder(order);
@@ -740,7 +766,7 @@ exports.processRefund = async (req, res, next) => {
       });
     }
 
-    if (!order.paymentVerified && !order.cashCollected) {
+    if (order.paymentStatus !== 'VERIFIED') {
       return res.status(400).json({
         success: false,
         message: 'Order was not paid, no refund needed'

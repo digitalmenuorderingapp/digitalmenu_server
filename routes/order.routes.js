@@ -13,6 +13,9 @@ router.get('/public/:id', orderController.getOrderByIdPublic);
 router.post('/public/:id/feedback', orderController.submitFeedback);
 router.put('/:id/feedback', orderController.submitFeedback);
 
+// Customer cancel route (public with deviceId verification)
+router.put('/:id/cancel', orderController.cancelOrder);
+
 // Protected admin routes
 router.use(protect, trackUserActivity);
 
@@ -26,8 +29,5 @@ router.put('/:id/verify-payment', orderController.verifyPayment);
 router.put('/:id/collect-cash', orderController.collectCash);
 router.put('/:id/reject', orderController.rejectOrder);
 router.post('/:id/refund', orderController.processRefund);
-
-// Customer cancel route (public with deviceId verification)
-router.put('/:id/cancel', orderController.cancelOrder);
 
 module.exports = router;
