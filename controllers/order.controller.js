@@ -323,8 +323,12 @@ exports.updateOrderStatus = async (req, res, next) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(order.deviceId).emit('orderStatusUpdate', enrichedOrder);
-      io.to(req.userId.toString()).emit('orderUpdate', enrichedOrder);
+      const adminRoom = order.restaurant.toString();
+      const customerRoom = order.deviceId;
+      
+      console.log(`[Socket] Order update emitted: ${id} status: ${status}`);
+      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
     }
 
     res.json({
@@ -501,7 +505,11 @@ exports.verifyPayment = async (req, res, next) => {
     // Emit update to admin room
     const io = req.app.get('io');
     if (io) {
-      io.to(req.userId.toString()).emit('orderUpdate', enrichedOrder);
+      const adminRoom = (order.restaurant || req.userId)?.toString();
+      const customerRoom = order.deviceId;
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+      if (customerRoom) io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+      console.log(`[Socket] Order update emitted: ${order._id} room: ${adminRoom}`);
     }
 
     res.json({
@@ -562,7 +570,11 @@ exports.collectCash = async (req, res, next) => {
     // Emit update to admin room
     const io = req.app.get('io');
     if (io) {
-      io.to(req.userId.toString()).emit('orderUpdate', enrichedOrder);
+      const adminRoom = (order.restaurant || req.userId)?.toString();
+      const customerRoom = order.deviceId;
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+      if (customerRoom) io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+      console.log(`[Socket] Order update emitted: ${order._id} room: ${adminRoom}`);
     }
 
     res.json({
@@ -607,8 +619,11 @@ exports.rejectOrder = async (req, res, next) => {
     // Emit update to admin and customer
     const io = req.app.get('io');
     if (io) {
-      io.to(req.userId.toString()).emit('orderUpdate', enrichedOrder);
-      io.to(order.deviceId).emit('orderStatusUpdate', enrichedOrder);
+      const adminRoom = order.restaurant.toString();
+      const customerRoom = order.deviceId;
+      console.log(`[Socket] Order rejected: ${id}`);
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
     }
 
     // Financial Logic: Revert the payment with a REFUND transaction
