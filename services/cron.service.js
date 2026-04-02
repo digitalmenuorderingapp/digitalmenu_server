@@ -17,7 +17,8 @@ exports.initCron = () => {
   // Self-ping to keep system awake (Render free tier)
   // Runs every 14 minutes to stay within the 15-minute window
   cron.schedule('*/14 * * * *', async () => {
-    const backendUrl = process.env.BACKEND_URL;
+    // Hardcoded for production: digitalmenu-server.onrender.com
+    const backendUrl = 'https://digitalmenu-server.onrender.com' || process.env.BACKEND_URL;
     if (!backendUrl) return;
 
     try {

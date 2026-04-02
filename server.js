@@ -13,14 +13,10 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 const allowedOrigins = [
-  process.env.ADMIN_URL,
-  process.env.SUPERADMIN_URL,
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://127.0.0.1:3000',
-  'http://127.0.0.1:3001'
+  'https://digitalmenuorder.vercel.app'  // Hardcoded production URL
+
 ].filter(origin => origin && typeof origin === 'string')
- .map(origin => origin.trim().replace(/\/$/, ''));
+  .map(origin => origin.trim().replace(/\/$/, ''));
 
 // CORS Check Function
 const checkOrigin = (origin, callback) => {
