@@ -57,9 +57,8 @@ exports.getTransactions = async (req, res, next) => {
         query.transactionDate = { $gte: start, $lte: end };
     } else if (date) {
         query.transactionDate = ledgerService.normalizeToISTMidnight(date);
-    } else {
-        query.transactionDate = ledgerService.normalizeToISTMidnight(new Date());
     }
+    // If no date filter provided, return ALL transactions for this restaurant
 
     const transactions = await LedgerTransaction.find(query).sort({ createdAt: -1 });
 
