@@ -4,7 +4,7 @@ const ledgerService = require('../services/ledger.service');
 const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
 const { reportEmailTemplate } = require('../templates/reportEmail');
-const User = require('../models/User');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 
 // Helper to attach transactions to a single order
 const getEnrichedOrder = async (order) => {
@@ -795,7 +795,7 @@ exports.processRefund = async (req, res, next) => {
 exports.sendReportEmail = async (req, res, next) => {
   try {
     const restaurantId = req.userId;
-    const user = await User.findById(restaurantId);
+    const user = await RestaurantAdmin.findById(restaurantId);
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'Restaurant not found' });

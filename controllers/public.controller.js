@@ -1,4 +1,4 @@
-const User = require('../models/User');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 const MenuItem = require('../models/MenuItem');
 const Table = require('../models/Table');
 
@@ -18,8 +18,8 @@ exports.getRestaurantDetails = async (req, res) => {
       });
     }
 
-    // Find user/restaurant by ID
-    const restaurant = await User.findById(id).select('restaurantName ownerName email address phone description logo');
+    // Find restaurant by ID
+    const restaurant = await RestaurantAdmin.findById(id).select('restaurantName ownerName email address phone description logo');
 
     if (!restaurant) {
       return res.status(404).json({
@@ -69,7 +69,7 @@ exports.getPublicMenu = async (req, res) => {
     }
 
     // Find restaurant by ID
-    const restaurant = await User.findById(restaurantId).select('restaurantName ownerName logo');
+    const restaurant = await RestaurantAdmin.findById(restaurantId).select('restaurantName ownerName logo');
 
     if (!restaurant) {
       return res.status(404).json({
@@ -84,8 +84,7 @@ exports.getPublicMenu = async (req, res) => {
       isActive: true 
     }).sort({ category: 1, name: 1 });
 
-    // Group items by category (if categories were used)
-    // Actually, looking at the previous code, it does a simple reduce.
+    // Group items by category
     const categorizedItems = menuItems.reduce((acc, item) => {
       const category = item.category || 'Other';
       if (!acc[category]) {
@@ -145,20 +144,13 @@ exports.verifyQRCode = async (req, res) => {
     }
 
     // Find restaurant by ID
-    const restaurant = await User.findById(restaurantId).select('restaurantName ownerName email isActive');
+    const restaurant = await RestaurantAdmin.findById(restaurantId).select('restaurantName ownerName email isActive');
 
     if (!restaurant) {
       return res.status(404).json({
         success: false,
         message: 'Restaurant not found'
       });
-    }
-
-    if (restaurant.isActive === false) {
-       return res.status(403).json({
-          success: false,
-          message: 'This restaurant is temporarily inactive'
-       });
     }
 
     // Fetch table details

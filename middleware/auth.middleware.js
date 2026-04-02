@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const RefreshToken = require('../models/RefreshToken');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 const { hashToken } = require('../utils/token');
 
 // Protect routes middleware
@@ -10,6 +9,9 @@ exports.protect = async (req, res, next) => {
     let refreshToken = req.cookies.refreshToken;
 
     if (!token) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[AUTH] 401 - Missing access token (Path: ${req.originalUrl})`);
+      }
       return res.status(401).json({
         success: false,
         message: 'Not authorized, no access token'
@@ -22,19 +24,21 @@ exports.protect = async (req, res, next) => {
       req.userId = decoded.userId;
 
       // Fetch user to check status and subscription
-      // We only select the necessary fields for performance
-      const user = await User.findById(decoded.userId).select('subscription role');
+      const user = await RestaurantAdmin.findById(decoded.userId).select('subscription role refreshTokens');
       
       if (!user) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(`[AUTH] 401 - User not found in DB: ${decoded.userId}`);
+        }
         return res.status(401).json({
           success: false,
-          message: 'User found in User collection'
+          message: 'User not found'
         });
       }
 
       // Enforcement Logic for Restaurant Admins
-      if (user.role === 'admin') {
-        const { type, status, expiryDate } = user.subscription;
+      if (user.role === 'admin' || user.role === 'user') { // Checking both for legacy support
+        const { status, type, expiryDate } = user.subscription;
 
         // 1. Check for deactivation/blocking ('inactive')
         if (status === 'inactive') {
@@ -62,52 +66,22 @@ exports.protect = async (req, res, next) => {
       // Try to get device ID from refresh token
       if (refreshToken) {
         try {
-          const tokenRecord = await RefreshToken.findOne({
-            tokenHash: hashToken(refreshToken),
-            userId: decoded.userId,
-            revokedAt: { $exists: false }
-          });
+          const hashed = hashToken(refreshToken);
+          const tokenRecord = user.refreshTokens.find(t => t.tokenHash === hashed && !t.revokedAt);
           
           if (tokenRecord) {
             req.deviceId = tokenRecord.deviceId;
-            console.log(`🔐 Auth - UserID: ${decoded.userId}, DeviceID: ${tokenRecord.deviceId}, Path: ${req.originalUrl}`);
-          } else {
-            console.log(`⚠️ No valid refresh token found for UserID: ${decoded.userId}`);
           }
         } catch (error) {
           console.error('❌ Error extracting device ID:', error);
         }
       }
       
-      // Update last seen timestamp for authenticated users
-      if (req.userId && req.deviceId) {
-        try {
-          console.log(`📱 Last Seen Update - UserID: ${req.userId}, DeviceID: ${req.deviceId}, Path: ${req.path}`);
-          
-          const result = await RefreshToken.updateOne(
-            { 
-              userId: req.userId, 
-              deviceId: req.deviceId 
-            },
-            { 
-              lastSeen: new Date(),
-              isOnline: true
-            },
-            { upsert: false }
-          );
-          
-          if (result.modifiedCount > 0) {
-            console.log(`✅ Last seen updated for device: ${req.deviceId}`);
-          } else {
-            console.log(`⚠️ No device found to update: ${req.deviceId}`);
-          }
-        } catch (error) {
-          console.error('❌ Error updating last seen:', error);
-        }
-      }
-      
       next();
     } catch (error) {
+      if (process.env.NODE_ENV === 'development') {
+        console.error(`[AUTH] 401 - Token Verification Failed: ${error.message} (Path: ${req.originalUrl})`);
+      }
       return res.status(401).json({
         success: false,
         message: 'Not authorized, token invalid'

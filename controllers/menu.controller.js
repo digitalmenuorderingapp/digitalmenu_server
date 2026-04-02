@@ -71,7 +71,7 @@ exports.getMenuItem = async (req, res, next) => {
 // Create menu item
 exports.createMenuItem = async (req, res, next) => {
   try {
-    const { name, description, ingredients, preparationMethod, price, offerPrice, category } = req.body;
+    const { name, description, ingredients, preparationMethod, price, offerPrice, category, foodType } = req.body;
     
     let imageUrl = null;
     
@@ -90,7 +90,8 @@ exports.createMenuItem = async (req, res, next) => {
       price: parseFloat(price),
       offerPrice: offerPrice ? parseFloat(offerPrice) : null,
       image: imageUrl,
-      category: category || 'Other'
+      category: category || 'Other',
+      foodType: foodType || 'Main Course'
     });
     
     res.status(201).json({
@@ -107,7 +108,7 @@ exports.createMenuItem = async (req, res, next) => {
 exports.updateMenuItem = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, description, ingredients, preparationMethod, price, offerPrice, isActive, category } = req.body;
+    const { name, description, ingredients, preparationMethod, price, offerPrice, isActive, category, foodType } = req.body;
     
     const menuItem = await MenuItem.findOne({ _id: id, restaurant: req.userId });
     
@@ -141,6 +142,7 @@ exports.updateMenuItem = async (req, res, next) => {
     if (offerPrice !== undefined) menuItem.offerPrice = offerPrice ? parseFloat(offerPrice) : null;
     if (isActive !== undefined) menuItem.isActive = isActive;
     if (category !== undefined) menuItem.category = category;
+    if (foodType !== undefined) menuItem.foodType = foodType;
     
     await menuItem.save();
     

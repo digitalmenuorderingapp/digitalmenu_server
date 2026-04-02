@@ -19,6 +19,24 @@ const systemLogSchema = new mongoose.Schema({
   }
 });
 
+// Sub-schema for refresh tokens (multi-device support)
+const refreshTokenSchema = new mongoose.Schema({
+  tokenHash: { type: String, required: true },
+  deviceId: { type: String, required: true },
+  deviceName: { type: String },
+  ipAddress: { type: String },
+  lastSeen: { type: Date, default: Date.now },
+  isOnline: { type: Boolean, default: false },
+  issuedAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date },
+  revokedAt: { type: Date },
+  sessions: [{
+    loggedInAt: { type: Date, required: true },
+    loggedOutAt: { type: Date },
+    duration: { type: Number } // Seconds
+  }]
+}, { _id: false });
+
 const superadminSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -45,13 +63,26 @@ const superadminSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  refreshTokenHash: {
-    type: String,
-    default: null
-  },
+  // Embedded refresh tokens for multi-device session management
+  refreshTokens: [refreshTokenSchema],
   systemLogs: [systemLogSchema]
 }, {
   timestamps: true
 });
+
+// Index for efficient token lookups
+superadminSchema.index({ 'refreshTokens.deviceId': 1 });
+superadminSchema.index({ 'refreshTokens.tokenHash': 1 });
+
+// Static method to mark inactive devices offline
+superadminSchema.statics.markInactiveDevicesOffline = async function () {
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  
+  return this.updateMany(
+    { 'refreshTokens.lastSeen': { $lt: fifteenMinutesAgo }, 'refreshTokens.isOnline': true },
+    { $set: { 'refreshTokens.$[elem].isOnline': false } },
+    { arrayFilters: [{ 'elem.lastSeen': { $lt: fifteenMinutesAgo }, 'elem.isOnline': true }] }
+  );
+};
 
 module.exports = mongoose.model('Superadmin', superadminSchema);

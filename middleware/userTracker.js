@@ -1,4 +1,4 @@
-const User = require('../models/User');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 
 /**
  * Middleware to track user (restaurant owner) activity
@@ -8,7 +8,7 @@ const trackUserActivity = async (req, res, next) => {
   if (req.userId) {
     try {
       // Async update - don't block the request
-      User.findByIdAndUpdate(req.userId, {
+      RestaurantAdmin.findByIdAndUpdate(req.userId, {
         lastActivity: new Date(),
         $inc: { requestCount: 1 }
       }).catch(err => console.error('[UserTracker] Failed to update activity:', err));

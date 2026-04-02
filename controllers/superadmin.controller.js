@@ -1,4 +1,4 @@
-const User = require('../models/User');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 const Superadmin = require('../models/Superadmin');
 const Order = require('../models/Order');
 const { generateOTP } = require('../utils/otp.util');
@@ -157,8 +157,32 @@ const verifyOTP = async (req, res) => {
     // Generate tokens
     const { accessToken, refreshToken } = generateSuperadminTokens(user._id);
 
-    // Save refresh token hash
-    user.refreshTokenHash = hashToken(refreshToken);
+    // Embedded refresh token for superadmin (multi-device support)
+    const deviceId = req.body.deviceId || 'browser_session';
+    const deviceName = req.body.deviceName || 'Superadmin Dashboard';
+
+    // Clear old tokens for this device or append new one
+    if (!user.refreshTokens) user.refreshTokens = [];
+    
+    // Find if device already exists
+    const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceId);
+    const tokenData = {
+      tokenHash: hashToken(refreshToken),
+      deviceId,
+      deviceName,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      isOnline: true,
+      lastSeen: new Date(),
+      sessions: [{ loggedInAt: new Date() }]
+    };
+
+    if (tokenIndex !== -1) {
+      user.refreshTokens[tokenIndex] = tokenData;
+    } else {
+      user.refreshTokens.push(tokenData);
+    }
+
     await user.save();
 
     // Log successful login
@@ -218,24 +242,72 @@ const getSystemStats = async (req, res) => {
  */
 const getServiceStatus = async (req, res) => {
   try {
+    // Check MongoDB connection details
+    const mongoState = mongoose.connection.readyState;
+    const mongoStatus = {
+      0: 'disconnected',
+      1: 'connected',
+      2: 'connecting',
+      3: 'disconnecting'
+    }[mongoState] || 'unknown';
+
+    // Get MongoDB stats
+    let mongoStats = null;
+    if (mongoState === 1) {
+      try {
+        const dbStats = await mongoose.connection.db.stats();
+        mongoStats = {
+          dataSize: (dbStats.dataSize / 1024 / 1024).toFixed(2) + ' MB',
+          storageSize: (dbStats.storageSize / 1024 / 1024).toFixed(2) + ' MB',
+          collections: dbStats.collections,
+          documents: dbStats.objects
+        };
+      } catch (e) {
+        console.error('MongoDB stats error:', e);
+      }
+    }
+
+    // Check Cloudinary status and storage
+    let cloudinaryStatus = 'error';
+    let cloudinaryStorage = null;
+    try {
+      const cloudinary = require('cloudinary').v2;
+      cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET
+      });
+      
+      // Get usage stats
+      const usage = await cloudinary.api.usage();
+      cloudinaryStatus = 'operational';
+      cloudinaryStorage = {
+        used: (usage.storage?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
+        limit: (usage.storage?.limit / 1024 / 1024 || 0).toFixed(2) + ' MB',
+        bandwidth: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
+        requests: usage.requests?.usage || 0,
+        percentage: usage.storage?.limit 
+          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1) 
+          : 0
+      };
+    } catch (cloudinaryError) {
+      console.error('Cloudinary status check error:', cloudinaryError.message);
+      cloudinaryStatus = 'error';
+    }
+
     const status = {
-      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      cloudinary: 'operational', // Simplified for demo
+      mongodb: {
+        status: mongoStatus,
+        stats: mongoStats
+      },
+      cloudinary: {
+        status: cloudinaryStatus,
+        storage: cloudinaryStorage
+      },
       email: 'operational',
       cron: 'running',
       socket: req.app.get('io') ? 'operational' : 'error'
     };
-
-    // Remove email ping to health-check@test.com as requested to stop costs and prevent proxy timeouts
-    /* 
-    try {
-        await emailService.sendEmail({ 
-            to: 'health-check@test.com', 
-            subject: 'Ping', 
-            text: 'Ping' 
-        }).catch(() => {});
-    } catch(e) {}
-    */
 
     res.json({ success: true, status });
   } catch (error) {
@@ -245,34 +317,99 @@ const getServiceStatus = async (req, res) => {
 };
 
 /**
- * Detailed User Management & Tracking
+ * Emit real-time service status to superadmin via socket.io
+ * This is called periodically to keep superadmin dashboard updated
  */
-const getUsers = async (req, res) => {
+const emitServiceStatus = async (io) => {
+  if (!io) return;
+  
   try {
-    const users = await User.find({})
+    // Check MongoDB
+    const mongoState = mongoose.connection.readyState;
+    const mongoStatus = {
+      0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting'
+    }[mongoState] || 'unknown';
+
+    let mongoStats = null;
+    if (mongoState === 1) {
+      try {
+        const dbStats = await mongoose.connection.db.stats();
+        mongoStats = {
+          dataSize: (dbStats.dataSize / 1024 / 1024).toFixed(2) + ' MB',
+          storageSize: (dbStats.storageSize / 1024 / 1024).toFixed(2) + ' MB',
+          collections: dbStats.collections,
+          documents: dbStats.objects
+        };
+      } catch (e) {}
+    }
+
+    // Check Cloudinary
+    let cloudinaryStatus = 'error';
+    let cloudinaryStorage = null;
+    try {
+      const cloudinary = require('cloudinary').v2;
+      cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET
+      });
+      const usage = await cloudinary.api.usage();
+      cloudinaryStatus = 'operational';
+      cloudinaryStorage = {
+        used: (usage.storage?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
+        limit: (usage.storage?.limit / 1024 / 1024 || 0).toFixed(2) + ' MB',
+        bandwidth: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
+        requests: usage.requests?.usage || 0,
+        percentage: usage.storage?.limit 
+          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1) 
+          : 0
+      };
+    } catch (e) {
+      cloudinaryStatus = 'error';
+    }
+
+    const status = {
+      mongodb: { status: mongoStatus, stats: mongoStats },
+      cloudinary: { status: cloudinaryStatus, storage: cloudinaryStorage },
+      email: 'operational',
+      cron: 'running',
+      socket: 'operational',
+      timestamp: new Date().toISOString()
+    };
+
+    // Emit to superadmin room
+    io.to('superadmin').emit('serviceStatusUpdate', status);
+    // console.log('[Socket] Service status emitted to superadmin room');
+  } catch (error) {
+    console.error('Emit service status error:', error);
+  }
+};
+const getRestaurants = async (req, res) => {
+  try {
+    const restaurants = await RestaurantAdmin.find({})
       .select('-password -otp -otpExpires')
       .sort({ createdAt: -1 });
 
-    // Enriched users for the dashboard
+    // Enriched restaurants for the dashboard
     const today = new Date();
     today.setHours(0,0,0,0);
 
-    const enrichedUsers = await Promise.all(users.map(async (u) => {
+    const enrichedRestaurants = await Promise.all(restaurants.map(async (r) => {
       const ordersToday = await Order.countDocuments({
-        restaurant: u._id,
+        restaurant: r._id,
         createdAt: { $gte: today }
       });
 
       return {
-        ...u.toJSON(),
+        ...r.toJSON(),
         ordersToday,
-        isOnline: (new Date() - new Date(u.lastActivity)) < (10 * 60 * 1000) // Online if active in last 10 mins
+        isOnline: (new Date() - new Date(r.lastActivity)) < (10 * 60 * 1000) // Online if active in last 10 mins
       };
     }));
 
-    res.json({ success: true, users: enrichedUsers });
+    res.json({ success: true, restaurants: enrichedRestaurants });
   } catch (error) {
-    console.error('Get users error:', error);
+    console.error('Get restaurants error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -286,7 +423,7 @@ const getAnalytics = async (req, res) => {
     today.setHours(0,0,0,0);
 
     const totalOrdersToday = await Order.countDocuments({ createdAt: { $gte: today } });
-    const newUsersToday = await User.countDocuments({ createdAt: { $gte: today } });
+    const newUsersToday = await RestaurantAdmin.countDocuments({ createdAt: { $gte: today } });
     
     // Revenue trend (Approx)
     const orders = await Order.find({ createdAt: { $gte: today }, status: 'served' });
@@ -313,7 +450,7 @@ const getAnalytics = async (req, res) => {
         }}
     ]);
 
-    const weeklyUsers = await User.aggregate([
+    const weeklyUsers = await RestaurantAdmin.aggregate([
         { $match: { createdAt: { $gte: sevenDaysAgo } } },
         { $group: {
             _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
@@ -325,7 +462,7 @@ const getAnalytics = async (req, res) => {
         const orderMatch = weeklyOrders.find(o => o._id === dayObj.date);
         if (orderMatch) dayObj.orders = orderMatch.count;
         const userMatch = weeklyUsers.find(u => u._id === dayObj.date);
-        if (userMatch) dayObj.users = userMatch.count;
+        if (userMatch) dayObj.restaurants = userMatch.count;
     });
 
     const weeklyData = Object.values(weeklyDataMap);
@@ -392,21 +529,21 @@ const getOrdersOverview = async (req, res) => {
 };
 
 /**
- * Get Detailed View of a Single User
+ * Get Detailed View of a Single Restaurant
  */
-const getUserDetail = async (req, res) => {
+const getRestaurantDetail = async (req, res) => {
   try {
     const { id } = req.params;
     
     // Validate ObjectId to prevent CastError
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ success: false, message: 'Invalid user ID format' });
+      return res.status(400).json({ success: false, message: 'Invalid ID format' });
     }
 
-    // Strictly sanitize user object - exclude sensitive or internal fields
-    const user = await User.findById(id).select('restaurantName ownerName email subscription lastActivity requestCount createdAt');
+    // Strictly sanitize restaurant object - exclude sensitive or internal fields
+    const restaurant = await RestaurantAdmin.findById(id).select('restaurantName ownerName email subscription lastActivity requestCount createdAt');
     
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
 
     const totalOrders = await Order.countDocuments({ restaurant: id });
     const orders = await Order.find({ restaurant: id, status: 'served' });
@@ -416,7 +553,7 @@ const getUserDetail = async (req, res) => {
     // Operational insight (Counts only, no STORIES)
     res.json({
       success: true,
-      user,
+      restaurant,
       stats: {
         totalOrders,
         totalRevenue,
@@ -425,7 +562,7 @@ const getUserDetail = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get user detail error:', error);
+    console.error('Get restaurant detail error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -433,27 +570,27 @@ const getUserDetail = async (req, res) => {
 /**
  * Update user account status (Active / Blocked)
  */
-const updateUserStatus = async (req, res) => {
+const updateRestaurantStatus = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { restaurantId } = req.params;
     const { status } = req.body; // Expecting 'active' or 'inactive'
 
-    const user = await User.findByIdAndUpdate(userId, { 
+    const restaurant = await RestaurantAdmin.findByIdAndUpdate(restaurantId, { 
       $set: { 'subscription.status': status } 
     }, { new: true });
 
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
 
     await logActivity({
       type: 'management',
-      action: `${status === 'active' ? 'Activated' : 'Blocked'} account for ${user.email}`,
+      action: `${status === 'active' ? 'Activated' : 'Blocked'} account for ${restaurant.email}`,
       user: req.user.email,
       req
     });
 
-    res.json({ success: true, user });
+    res.json({ success: true, restaurant });
   } catch (error) {
-    console.error('Update user status error:', error);
+    console.error('Update restaurant status error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -467,20 +604,20 @@ const updateSubscription = async (req, res) => {
     const { subscription } = req.body;
     
     // Update the nested subscription object
-    const user = await User.findByIdAndUpdate(userId, { 
+    const restaurant = await RestaurantAdmin.findByIdAndUpdate(userId, { 
       $set: { subscription } 
     }, { new: true });
 
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
 
     await logActivity({
       type: 'management',
-      action: `Updated subscription for ${user.email}`,
+      action: `Updated subscription for ${restaurant.email}`,
       user: req.user.email,
       req
     });
 
-    res.json({ success: true, user });
+    res.json({ success: true, restaurant });
   } catch (error) {
     console.error('Update subscription error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
@@ -512,17 +649,26 @@ const refreshSuperadminToken = async (req, res) => {
     }
     
     const tokenHash = hashToken(refreshToken);
+    const tokenDoc = user.refreshTokens.find(t => t.tokenHash === tokenHash);
     
-    if (user.refreshTokenHash !== tokenHash) {
-      return res.status(401).json({ success: false, message: 'Invalid session (token mismatch)' });
+    if (!tokenDoc || tokenDoc.revokedAt) {
+      return res.status(401).json({ success: false, message: 'Invalid session (token mismatch or revoked)' });
     }
 
     const tokens = generateSuperadminTokens(user._id);
-    user.refreshTokenHash = hashToken(tokens.refreshToken);
+    
+    // Update token in array
+    tokenDoc.tokenHash = hashToken(tokens.refreshToken);
+    tokenDoc.lastSeen = new Date();
+    tokenDoc.ipAddress = req.ip || req.connection.remoteAddress;
     await user.save();
 
     res.cookie('accessToken', tokens.accessToken, accessCookieOptions);
     res.cookie('refreshToken', tokens.refreshToken, cookieOptions);
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🔄 [SUPERADMIN AUTH] Access Token Refreshed for Superadmin: ${user.email}`);
+    }
 
     res.json({ success: true, accessToken: tokens.accessToken });
   } catch (error) {
@@ -536,7 +682,7 @@ const refreshSuperadminToken = async (req, res) => {
  */
 const getMe = async (req, res) => {
   try {
-    const user = await Superadmin.findById(req.user.id).select('-otp -otpExpires -refreshTokenHash');
+    const user = await Superadmin.findById(req.user.id).select('-otp -otpExpires -refreshTokens');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -598,19 +744,75 @@ const getAuditLogs = async (req, res) => {
   }
 };
 
+/**
+ * Get Cloudinary usage stats
+ */
+const getCloudinaryStats = async (req, res) => {
+  try {
+    const cloudinary = require('cloudinary').v2;
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET
+    });
+    
+    // Get usage stats
+    const usage = await cloudinary.api.usage();
+    
+    // Calculate storage metrics
+    const storageUsed = usage.storage?.usage || 0;
+    const storageLimit = usage.storage?.limit || 0;
+    const percentage = storageLimit > 0 ? ((storageUsed / storageLimit) * 100).toFixed(1) : 0;
+    
+    res.json({
+      success: true,
+      cloudinary: {
+        status: 'operational',
+        storage: {
+          used: storageUsed,
+          limit: storageLimit,
+          usedFormatted: (storageUsed / 1024 / 1024).toFixed(2) + ' MB',
+          limitFormatted: (storageLimit / 1024 / 1024).toFixed(2) + ' MB',
+          percentage: parseFloat(percentage),
+          bytesUsed: storageUsed,
+          bytesLimit: storageLimit
+        },
+        bandwidth: {
+          used: usage.bandwidth?.usage || 0,
+          formatted: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB'
+        },
+        requests: usage.requests?.usage || 0,
+        plan: usage.plan || 'Free'
+      }
+    });
+  } catch (error) {
+    console.error('Cloudinary stats error:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch Cloudinary stats',
+      cloudinary: {
+        status: 'error',
+        error: error.message
+      }
+    });
+  }
+};
+
 module.exports = {
   requestOTP,
   verifyOTP,
   getSystemStats,
   getServiceStatus,
+  emitServiceStatus,
   getAnalytics,
   getOrdersOverview,
-  getUsers,
-  getUserDetail,
-  updateUserStatus,
+  getRestaurants,
+  getRestaurantDetail,
+  updateRestaurantStatus,
   updateSubscription,
   refreshSuperadminToken,
   logout,
   getAuditLogs,
-  getMe
+  getMe,
+  getCloudinaryStats
 };

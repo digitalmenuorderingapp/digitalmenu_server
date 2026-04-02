@@ -1,12 +1,13 @@
-const RefreshToken = require('../models/RefreshToken');
-const User = require('../models/User');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
+const Superadmin = require('../models/Superadmin');
 
 // Get all devices for the authenticated user with session history
 exports.getDevices = async (req, res, next) => {
   try {
-    const devices = await RefreshToken.find({ userId: req.userId })
-      .select('deviceId deviceName isOnline lastSeen sessions ipAddress userAgent')
-      .sort({ lastSeen: -1 });
+    const user = await RestaurantAdmin.findById(req.userId).select('refreshTokens');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const devices = user.refreshTokens.sort((a, b) => b.lastSeen - a.lastSeen);
 
     // Format the response with session data
     const formattedDevices = devices.map(device => {
@@ -21,7 +22,6 @@ exports.getDevices = async (req, res, next) => {
         isOnline: device.isOnline,
         lastSeen: device.lastSeen,
         ipAddress: device.ipAddress,
-        userAgent: device.userAgent,
         sessions: sortedSessions.map(session => ({
           loggedInAt: session.loggedInAt,
           loggedOutAt: session.loggedOutAt,
@@ -44,11 +44,10 @@ exports.getDevices = async (req, res, next) => {
 exports.getDeviceActivity = async (req, res, next) => {
   try {
     const { deviceId } = req.params;
-    
-    const device = await RefreshToken.findOne({ 
-      userId: req.userId, 
-      deviceId 
-    }).select('deviceId deviceName isOnline lastSeen sessions ipAddress userAgent');
+    const user = await RestaurantAdmin.findById(req.userId).select('refreshTokens');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const device = user.refreshTokens.find(t => t.deviceId === deviceId);
 
     if (!device) {
       return res.status(404).json({
@@ -57,7 +56,7 @@ exports.getDeviceActivity = async (req, res, next) => {
       });
     }
 
-    // Sort sessions by login time (most recent first)
+    // Sort sessions by login time
     const sortedSessions = device.sessions.sort((a, b) => 
       new Date(b.loggedInAt) - new Date(a.loggedInAt)
     ).map(session => ({
@@ -74,7 +73,6 @@ exports.getDeviceActivity = async (req, res, next) => {
         isOnline: device.isOnline,
         lastSeen: device.lastSeen,
         ipAddress: device.ipAddress,
-        userAgent: device.userAgent,
         sessions: sortedSessions
       }
     });
@@ -87,21 +85,28 @@ exports.getDeviceActivity = async (req, res, next) => {
 exports.revokeDevice = async (req, res, next) => {
   try {
     const { deviceId } = req.params;
-    
-    const result = await RefreshToken.updateMany(
-      { userId: req.userId, deviceId },
-      { 
-        revokedAt: new Date(),
-        isOnline: false
-      }
-    );
+    const user = await RestaurantAdmin.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (result.matchedCount === 0) {
+    const token = user.refreshTokens.find(t => t.deviceId === deviceId);
+    if (!token) {
       return res.status(404).json({
         success: false,
         message: 'Device not found'
       });
     }
+
+    token.revokedAt = new Date();
+    token.isOnline = false;
+    
+    // End current session if active
+    const currentSession = token.sessions[token.sessions.length - 1];
+    if (currentSession && !currentSession.loggedOutAt) {
+      currentSession.loggedOutAt = new Date();
+      currentSession.duration = Math.floor((currentSession.loggedOutAt - currentSession.loggedInAt) / 1000);
+    }
+    
+    await user.save();
 
     res.json({
       success: true,

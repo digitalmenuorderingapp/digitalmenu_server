@@ -1,7 +1,25 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const userSchema = new mongoose.Schema({
+// Sub-schema for refresh tokens (multi-device support)
+const refreshTokenSchema = new mongoose.Schema({
+  tokenHash: { type: String, required: true },
+  deviceId: { type: String, required: true },
+  deviceName: { type: String },
+  ipAddress: { type: String },
+  lastSeen: { type: Date, default: Date.now },
+  isOnline: { type: Boolean, default: false },
+  issuedAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date },
+  revokedAt: { type: Date },
+  sessions: [{
+    loggedInAt: { type: Date, required: true },
+    loggedOutAt: { type: Date },
+    duration: { type: Number } // Seconds
+  }]
+}, { _id: false });
+
+const restaurantAdminSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, 'Email is required'],
@@ -43,10 +61,9 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  refreshToken: {
-    type: String,
-    default: null
-  },
+  // Embedded refresh tokens for multi-device session management
+  refreshTokens: [refreshTokenSchema],
+  
   // Restaurant Details
   restaurantName: {
     type: String,
@@ -74,8 +91,8 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'superadmin'],
-    default: 'user'
+    enum: ['user', 'admin', 'moderator'], // 'user' is legacy, we use 'admin' mostly now
+    default: 'admin'
   },
   otp: {
     type: String,
@@ -85,8 +102,6 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  // Superadmin Management
-  // Subscription Engine (Improved Structure)
   subscription: {
     type: { 
       type: String, 
@@ -107,7 +122,6 @@ const userSchema = new mongoose.Schema({
       default: null 
     }
   },
-  // Superadmin Management
   lastLogin: Date,
   lastActivity: Date,
   requestCount: {
@@ -115,19 +129,34 @@ const userSchema = new mongoose.Schema({
     default: 0
   }
 }, {
-  timestamps: true
+  timestamps: true,
 });
 
+// Index for efficient token lookups
+restaurantAdminSchema.index({ 'refreshTokens.deviceId': 1 });
+restaurantAdminSchema.index({ 'refreshTokens.tokenHash': 1 });
+
 // Hash password before saving
-userSchema.pre('save', async function (next) {
+restaurantAdminSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
 // Compare password method
-userSchema.methods.comparePassword = async function (candidatePassword) {
+restaurantAdminSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-module.exports = mongoose.model('User', userSchema);
+// Static method to mark inactive devices offline
+restaurantAdminSchema.statics.markInactiveDevicesOffline = async function () {
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  
+  return this.updateMany(
+    { 'refreshTokens.lastSeen': { $lt: fifteenMinutesAgo }, 'refreshTokens.isOnline': true },
+    { $set: { 'refreshTokens.$[elem].isOnline': false } },
+    { arrayFilters: [{ 'elem.lastSeen': { $lt: fifteenMinutesAgo }, 'elem.isOnline': true }] }
+  );
+};
+
+module.exports = mongoose.model('RestaurantAdmin', restaurantAdminSchema);

@@ -1,4 +1,4 @@
-const User = require('../models/User');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 const DailyLedger = require('../models/DailyLedger');
 const Order = require('../models/Order');
 const LedgerTransaction = require('../models/LedgerTransaction');
@@ -12,7 +12,7 @@ const { monthlyReportTemplate } = require('../templates/monthlyReportTemplate');
  */
 const processEndOfMonth = async () => {
   try {
-    const restaurants = await User.find({});
+    const restaurants = await RestaurantAdmin.find({});
     const now = new Date();
     
     // Calculate last month details

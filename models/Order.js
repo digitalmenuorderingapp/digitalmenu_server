@@ -38,7 +38,7 @@ const orderSchema = new mongoose.Schema({
   // Restaurant & Table
   restaurant: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'RestaurantAdmin',
     required: true,
     index: true
   },
@@ -246,7 +246,6 @@ orderSchema.pre('save', async function (next) {
 });
 
 // Compound indexes for efficient queries
-orderSchema.index({ orderNumber: 1 });
 orderSchema.index({ restaurant: 1, createdAt: -1 });
 orderSchema.index({ restaurant: 1, tableNumber: 1, createdAt: -1 });
 orderSchema.index({ restaurant: 1, deviceId: 1, createdAt: -1 });

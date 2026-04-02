@@ -21,7 +21,7 @@ exports.initCron = () => {
     if (!backendUrl) return;
 
     try {
-      console.log(`[Cron] Pinging system to keep awake: ${backendUrl}/api/health`);
+      // console.log(`[Cron] Pinging system to keep awake: ${backendUrl}/api/health`);
       // Using native fetch if available (Node 18+) or dynamic import for node-fetch is overkill
       // We can use a simple broad GET for now. 
       const https = require('https');
@@ -29,7 +29,7 @@ exports.initCron = () => {
       const protocol = backendUrl.startsWith('https') ? https : http;
 
       protocol.get(`${backendUrl}/api/health`, (res) => {
-        console.log(`[Cron] Awake Ping Status: ${res.statusCode}`);
+        // console.log(`[Cron] Awake Ping Status: ${res.statusCode}`);
       }).on('error', (err) => {
         console.error('[Cron] Awake Ping Failed:', err.message);
       });
@@ -38,5 +38,5 @@ exports.initCron = () => {
     }
   });
 
-  console.log('Cron services initialized.');
+  // console.log('Cron services initialized.');
 };

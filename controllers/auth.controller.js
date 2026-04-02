@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const RefreshToken = require('../models/RefreshToken');
+const RestaurantAdmin = require('../models/RestaurantAdmin');
 const { hashToken } = require('../utils/token');
 const emailService = require('../services/email.service');
 const { registerOtpTemplate, resetPasswordOtpTemplate } = require('../templates/otpTemplates');
@@ -45,7 +44,7 @@ exports.register = async (req, res, next) => {
     const { email, password } = req.body;
 
     // Check if user exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await RestaurantAdmin.findOne({ email });
     if (existingUser) {
       if (existingUser.isVerified) {
         return res.status(400).json({
@@ -74,7 +73,7 @@ exports.register = async (req, res, next) => {
 
     // Create user (unverified)
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const user = await User.create({
+    const user = await RestaurantAdmin.create({
       email,
       password,
       verificationCode: otp,
@@ -102,7 +101,7 @@ exports.verifyOtp = async (req, res, next) => {
   try {
     const { email, otp, deviceId, deviceName } = req.body;
 
-    const user = await User.findOne({ email });
+    const user = await RestaurantAdmin.findOne({ email });
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -124,19 +123,23 @@ exports.verifyOtp = async (req, res, next) => {
     // Now log them in (Generate tokens)
     const { accessToken, refreshToken } = generateTokens(user._id);
 
-    // Create session
-    await RefreshToken.create({
-      userId: user._id,
+    // Initialize refreshTokens array if it doesn't exist
+    if (!user.refreshTokens) user.refreshTokens = [];
+
+    // Create session embedded in RestaurantAdmin
+    const tokenData = {
       tokenHash: hashToken(refreshToken),
       deviceId: deviceId || 'unknown',
       deviceName: deviceName || 'Unknown Device',
       ipAddress: req.ip || req.connection.remoteAddress,
-      userAgent: req.headers['user-agent'],
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       isOnline: true,
       lastSeen: new Date(),
       sessions: [{ loggedInAt: new Date() }]
-    });
+    };
+
+    user.refreshTokens.push(tokenData);
+    await user.save();
 
     // Log successful registration/verification
     await logActivity({
@@ -176,7 +179,7 @@ exports.login = async (req, res, next) => {
     const { email, password, deviceId, deviceName } = req.body;
 
     // Check if user exists
-    const user = await User.findOne({ email });
+    const user = await RestaurantAdmin.findOne({ email });
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -206,44 +209,41 @@ exports.login = async (req, res, next) => {
     const { accessToken, refreshToken } = generateTokens(user._id);
 
     // Use provided deviceId (persistent from frontend)
-    const deviceIdentifier = deviceId;
+    const deviceIdentifier = deviceId || 'unknown';
 
-    const RefreshToken = require('../models/RefreshToken');
+    // Find if device already exists in the admin's refreshTokens
+    const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceIdentifier);
 
-    // Check if device already exists for this user
-    const existingToken = await RefreshToken.findOne({
-      userId: user._id,
-      deviceId: deviceIdentifier
-    });
-
-    if (existingToken) {
+    if (tokenIndex !== -1) {
       // Update existing token and start new session
-      existingToken.tokenHash = hashToken(refreshToken);
-      existingToken.deviceName = deviceName || req.headers['user-agent'] || 'Unknown Device';
-      existingToken.ipAddress = req.ip || req.connection.remoteAddress;
-      existingToken.userAgent = req.headers['user-agent'];
-      existingToken.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      existingToken.revokedAt = undefined; // Clear revoked status
+      const token = user.refreshTokens[tokenIndex];
+      token.tokenHash = hashToken(refreshToken);
+      token.deviceName = deviceName || req.headers['user-agent'] || 'Unknown Device';
+      token.ipAddress = req.ip || req.connection.remoteAddress;
+      token.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      token.revokedAt = undefined;
+      token.isOnline = true;
+      token.lastSeen = new Date();
+      token.sessions.push({ loggedInAt: new Date() });
 
-      // Start new session
-      await existingToken.startSession();
+      // Keep only last 7 days of sessions
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      token.sessions = token.sessions.filter(s => s.loggedInAt > sevenDaysAgo);
     } else {
-      // Create new refresh token entry only if device doesn't exist
-      const newToken = await RefreshToken.create({
-        userId: user._id,
+      // Create new refresh token entry in the array
+      user.refreshTokens.push({
         tokenHash: hashToken(refreshToken),
         deviceId: deviceIdentifier,
         deviceName: deviceName || req.headers['user-agent'] || 'Unknown Device',
         ipAddress: req.ip || req.connection.remoteAddress,
-        userAgent: req.headers['user-agent'],
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         isOnline: true,
         lastSeen: new Date(),
-        sessions: [{
-          loggedInAt: new Date()
-        }]
+        sessions: [{ loggedInAt: new Date() }]
       });
     }
+
+    await user.save();
 
     // Log successful login
     await logActivity({
@@ -288,17 +288,22 @@ exports.logout = async (req, res, next) => {
 
     // Find and update refresh token with session end
     if (refreshToken) {
-      const tokenRecord = await RefreshToken.findOne({
-        tokenHash: hashToken(refreshToken)
-      });
+      const hashed = hashToken(refreshToken);
+      const user = await RestaurantAdmin.findOne({ 'refreshTokens.tokenHash': hashed });
 
-      if (tokenRecord) {
-        // End current session
-        await tokenRecord.endCurrentSession();
-
-        // Mark token as revoked
-        tokenRecord.revokedAt = new Date();
-        await tokenRecord.save();
+      if (user) {
+        const token = user.refreshTokens.find(t => t.tokenHash === hashed);
+        if (token) {
+          // End current session
+          const currentSession = token.sessions[token.sessions.length - 1];
+          if (currentSession && !currentSession.loggedOutAt) {
+            currentSession.loggedOutAt = new Date();
+            currentSession.duration = Math.floor((currentSession.loggedOutAt - currentSession.loggedInAt) / 1000);
+          }
+          token.isOnline = false;
+          token.revokedAt = new Date();
+          await user.save();
+        }
       }
     }
 
@@ -321,6 +326,9 @@ exports.refresh = async (req, res, next) => {
     const { refreshToken } = req.cookies;
 
     if (!refreshToken) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[AUTH] Refresh - No refresh token cookie found`);
+      }
       return res.status(401).json({
         success: false,
         message: 'No refresh token provided'
@@ -329,14 +337,30 @@ exports.refresh = async (req, res, next) => {
 
     // Verify refresh token
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const hashed = hashToken(refreshToken);
 
-    // Find token in RefreshToken collection (like project1)
-    const tokenDoc = await RefreshToken.findOne({
-      userId: decoded.userId,
-      tokenHash: hashToken(refreshToken)
+    // Find admin user with this token
+    const user = await RestaurantAdmin.findOne({ 
+      _id: decoded.userId,
+      'refreshTokens.tokenHash': hashed 
     });
 
+    if (!user) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[AUTH] Refresh - User or Token not found in DB`);
+      }
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid session'
+      });
+    }
+
+    const tokenDoc = user.refreshTokens.find(t => t.tokenHash === hashed);
+
     if (!tokenDoc || tokenDoc.revokedAt) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`[AUTH] Refresh - Token revoked in DB`);
+      }
       return res.status(401).json({
         success: false,
         message: 'Invalid refresh token'
@@ -362,11 +386,15 @@ exports.refresh = async (req, res, next) => {
     tokenDoc.lastSeen = new Date();
     tokenDoc.ipAddress = req.ip || req.connection.remoteAddress;
     tokenDoc.userAgent = req.headers['user-agent'];
-    await tokenDoc.save();
+    await user.save();
 
     // Set new cookies
     res.cookie('accessToken', tokens.accessToken, accessCookieOptions);
     res.cookie('refreshToken', tokens.refreshToken, cookieOptions);
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🔄 [AUTH] Access Token Refreshed for User: ${decoded.userId}`);
+    }
 
     res.json({
       success: true,
@@ -386,7 +414,7 @@ exports.refresh = async (req, res, next) => {
 // Get current user
 exports.getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.userId).select('-password -refreshToken');
+    const user = await RestaurantAdmin.findById(req.userId).select('-password -refreshTokens');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -406,8 +434,10 @@ exports.getMe = async (req, res, next) => {
 // List active devices
 exports.listActiveDevices = async (req, res, next) => {
   try {
-    const RefreshToken = require('../models/RefreshToken');
-    const devices = await RefreshToken.find({ userId: req.userId }).sort({ lastSeen: -1 });
+    const user = await RestaurantAdmin.findById(req.userId).select('refreshTokens');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const devices = user.refreshTokens.sort((a, b) => b.lastSeen - a.lastSeen);
 
     res.json({
       success: true,
@@ -416,7 +446,6 @@ exports.listActiveDevices = async (req, res, next) => {
         deviceId: d.deviceId,
         deviceName: d.deviceName,
         ipAddress: d.ipAddress,
-        userAgent: d.userAgent,
         issuedAt: d.issuedAt,
         expiresAt: d.expiresAt,
         isOnline: d.isOnline,
@@ -433,19 +462,28 @@ exports.listActiveDevices = async (req, res, next) => {
 exports.logoutDevice = async (req, res, next) => {
   try {
     const { deviceId } = req.body;
-    const RefreshToken = require('../models/RefreshToken');
+    const user = await RestaurantAdmin.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const device = await RefreshToken.findOne({ deviceId, userId: req.userId });
-    if (!device) {
+    const token = user.refreshTokens.find(t => t.deviceId === deviceId);
+    if (!token) {
       return res.status(404).json({
         success: false,
         message: 'Device not found'
       });
     }
 
-    device.revokedAt = new Date();
-    device.isOnline = false;
-    await device.save();
+    token.revokedAt = new Date();
+    token.isOnline = false;
+    
+    // End current session if active
+    const currentSession = token.sessions[token.sessions.length - 1];
+    if (currentSession && !currentSession.loggedOutAt) {
+      currentSession.loggedOutAt = new Date();
+      currentSession.duration = Math.floor((currentSession.loggedOutAt - currentSession.loggedInAt) / 1000);
+    }
+    
+    await user.save();
 
     res.json({
       success: true,
@@ -460,7 +498,7 @@ exports.logoutDevice = async (req, res, next) => {
 exports.forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email });
+    const user = await RestaurantAdmin.findOne({ email });
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -488,7 +526,7 @@ exports.resetPassword = async (req, res, next) => {
   try {
     const { email, otp, newPassword } = req.body;
 
-    const user = await User.findOne({ email });
+    const user = await RestaurantAdmin.findOne({ email });
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -512,7 +550,7 @@ exports.resetPassword = async (req, res, next) => {
 exports.resendOtp = async (req, res, next) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email });
+    const user = await RestaurantAdmin.findOne({ email });
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -544,11 +582,11 @@ exports.updateRestaurant = async (req, res, next) => {
   try {
     const { restaurantName, ownerName, address, phone, description } = req.body;
 
-    const user = await User.findByIdAndUpdate(
+    const user = await RestaurantAdmin.findByIdAndUpdate(
       req.userId,
       { restaurantName, ownerName, address, phone, description },
       { new: true, runValidators: true }
-    ).select('-password -refreshToken');
+    ).select('-password -refreshTokens');
 
     if (!user) {
       return res.status(404).json({
@@ -574,7 +612,7 @@ exports.uploadLogo = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Please upload an image' });
     }
 
-    const user = await User.findById(req.userId);
+    const user = await RestaurantAdmin.findById(req.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -605,7 +643,7 @@ exports.uploadLogo = async (req, res, next) => {
 // Remove restaurant logo
 exports.removeLogo = async (req, res, next) => {
   try {
-    const user = await User.findById(req.userId);
+    const user = await RestaurantAdmin.findById(req.userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -632,7 +670,7 @@ exports.removeLogo = async (req, res, next) => {
 exports.sendDeleteAccountOtp = async (req, res, next) => {
   try {
     const userId = req.userId;
-    const user = await User.findById(userId);
+    const user = await RestaurantAdmin.findById(userId);
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -671,7 +709,7 @@ exports.deleteAccount = async (req, res, next) => {
     const { otp } = req.body;
     const userId = req.userId;
 
-    const user = await User.findById(userId);
+    const user = await RestaurantAdmin.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -783,8 +821,7 @@ exports.deleteAccount = async (req, res, next) => {
       DailyLedger.deleteMany({ restaurant: userId }),
       LedgerTransaction.deleteMany({ restaurant: userId }),
       MenuItem.deleteMany({ restaurant: userId }),
-      RefreshToken.deleteMany({ userId }),
-      User.findByIdAndDelete(userId)
+      RestaurantAdmin.findByIdAndDelete(userId)
     ]);
 
     // Clear cookies

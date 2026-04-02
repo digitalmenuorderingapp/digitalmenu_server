@@ -6,6 +6,16 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Verify connection
+(async () => {
+  try {
+    await cloudinary.api.ping();
+    console.log('✅ Cloudinary Connected Successfully');
+  } catch (error) {
+    console.error('❌ Cloudinary Connection Failed:', error.message);
+  }
+})();
+
 exports.uploadToCloudinary = async (fileBuffer, folder = 'digitalmenu') => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -39,6 +49,8 @@ exports.deleteFromCloudinary = async (publicId) => {
 
 exports.extractPublicId = (url) => {
   if (!url) return null;
-  const matches = url.match(/\/v\d+\/(.+)\.\w+$/);
+  // Match everything after /upload/ (optionally skipping /v12345/) and before the extension
+  // This supports both folder-nested and root-level public IDs
+  const matches = url.match(/\/upload\/(?:v\d+\/)?(.+)\.\w+$/);
   return matches ? matches[1] : null;
 };

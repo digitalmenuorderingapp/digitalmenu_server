@@ -56,17 +56,17 @@ app.set('io', io);
 
 // Socket.io connection logic
 io.on('connection', (socket) => {
-  console.log(`[Socket] Client connected: ${socket.id}`);
+  // console.log(`[Socket] Client connected: ${socket.id}`);
   
   socket.on('join', (room) => {
     socket.join(room);
-    console.log(`[Socket] ${socket.id} joined room: ${room}`);
+    // console.log(`[Socket] ${socket.id} joined room: ${room}`);
     // Log all rooms this socket is in
-    console.log(`[Socket] ${socket.id} is now in rooms:`, Array.from(socket.rooms));
+    // console.log(`[Socket] ${socket.id} is now in rooms:`, Array.from(socket.rooms));
   });
 
   socket.on('disconnect', () => {
-    console.log(`[Socket] Client disconnected: ${socket.id}`);
+    // console.log(`[Socket] Client disconnected: ${socket.id}`);
   });
 });
 
@@ -90,7 +90,7 @@ app.use(cors({
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digitalmenu');
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    console.log(`MongoDB Connected`);
     
     // Ensure Superadmin Account
     const Superadmin = require('./models/Superadmin');
@@ -114,15 +114,28 @@ const connectDB = async () => {
 connectDB().then(() => {
   // Initialize cron jobs
   initCron();
+  
+  // Start periodic service status emission to superadmin
+  const { emitServiceStatus } = require('./controllers/superadmin.controller');
+  setInterval(() => {
+    emitServiceStatus(io);
+  }, 30000); // Emit every 30 seconds
+  // console.log('[ServiceStatus] Periodic emission started (every 30s)');
 });
 
 // Scheduled task to mark inactive devices offline
 setInterval(async () => {
   try {
-    const RefreshToken = require('./models/RefreshToken');
-    const markedOffline = await RefreshToken.markInactiveDevicesOffline();
-    if (markedOffline > 0) {
-      console.log(`Marked ${markedOffline} devices as offline`);
+    const RestaurantAdmin = require('./models/RestaurantAdmin');
+    const Superadmin = require('./models/Superadmin');
+    
+    const markedRestaurantOffline = await RestaurantAdmin.markInactiveDevicesOffline();
+    const markedSuperadminOffline = await Superadmin.markInactiveDevicesOffline();
+    
+    const totalMarked = (markedRestaurantOffline?.modifiedCount || 0) + (markedSuperadminOffline?.modifiedCount || 0);
+    
+    if (totalMarked > 0) {
+      console.log(`[OfflineSync] Marked ${totalMarked} devices as offline`);
     }
   } catch (error) {
     console.error('Error marking devices offline:', error);

@@ -7,14 +7,15 @@ const {
   getServiceStatus,
   getAnalytics,
   getOrdersOverview,
-  getUsers,
-  getUserDetail,
-  updateUserStatus,
+  getRestaurants,
+  getRestaurantDetail,
+  updateRestaurantStatus,
   updateSubscription,
   refreshSuperadminToken,
   logout,
   getAuditLogs,
-  getMe
+  getMe,
+  getCloudinaryStats
 } = require('../controllers/superadmin.controller');
 const { superadminProtect } = require('../middleware/superadmin.middleware');
 
@@ -30,10 +31,11 @@ router.get('/system-stats', superadminProtect, getSystemStats);
 router.get('/service-status', superadminProtect, getServiceStatus);
 router.get('/analytics', superadminProtect, getAnalytics);
 router.get('/orders-overview', superadminProtect, getOrdersOverview);
-router.get('/users', superadminProtect, getUsers);
-router.get('/user/:id', superadminProtect, getUserDetail);
-router.patch('/users/:userId/status', superadminProtect, updateUserStatus);
-router.patch('/users/:userId/subscription', superadminProtect, updateSubscription);
+router.get('/restaurants', superadminProtect, getRestaurants);
+router.get('/restaurant/:id', superadminProtect, getRestaurantDetail);
+router.patch('/restaurants/:restaurantId/status', superadminProtect, updateRestaurantStatus);
+router.patch('/restaurants/:restaurantId/subscription', superadminProtect, updateSubscription);
 router.get('/logs', superadminProtect, getAuditLogs);
+router.get('/cloudinary-stats', superadminProtect, getCloudinaryStats);
 
 module.exports = router;

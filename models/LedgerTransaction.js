@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const ledgerTransactionSchema = new mongoose.Schema({
   restaurant: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'RestaurantAdmin',
     required: true,
     index: true
   },
@@ -67,6 +67,5 @@ const ledgerTransactionSchema = new mongoose.Schema({
 // We'll use this for daily aggregation.
 
 ledgerTransactionSchema.index({ restaurant: 1, transactionDate: -1 });
-ledgerTransactionSchema.index({ orderId: 1 });
 
 module.exports = mongoose.model('LedgerTransaction', ledgerTransactionSchema);

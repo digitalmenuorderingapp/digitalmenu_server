@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const menuItemSchema = new mongoose.Schema({
   restaurant: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'RestaurantAdmin',
     required: true,
     index: true
   },
