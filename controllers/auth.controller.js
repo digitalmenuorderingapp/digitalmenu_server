@@ -23,18 +23,20 @@ const generateTokens = (userId) => {
   return { accessToken, refreshToken };
 };
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 // Cookie options
 const cookieOptions = {
   httpOnly: true,
-  secure: false, // Set to false for local development
-  sameSite: 'lax', // lax works with proxy setup
+  secure: isProduction, // Render/Vercel support HTTPS
+  sameSite: isProduction ? 'none' : 'lax', // Required for cross-site (Vercel -> Render)
   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 };
 
 const accessCookieOptions = {
   httpOnly: true,
-  secure: false, // Set to false for local development
-  sameSite: 'lax',
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   maxAge: 15 * 60 * 1000 // 15 minutes
 };
 

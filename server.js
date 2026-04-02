@@ -11,6 +11,7 @@ const { initCron } = require('./services/cron.service');
 dotenv.config();
 
 const app = express();
+app.set('trust proxy', 1); // Trust first proxy (Render/Vercel)
 const server = http.createServer(app);
 const allowedOrigins = [
   'https://digitalmenuorder.vercel.app'  // Hardcoded production URL

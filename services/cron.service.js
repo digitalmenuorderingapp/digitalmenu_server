@@ -18,7 +18,7 @@ exports.initCron = () => {
   // Runs every 14 minutes to stay within the 15-minute window
   cron.schedule('*/14 * * * *', async () => {
     // Hardcoded for production: digitalmenu-server.onrender.com
-    const backendUrl = 'https://digitalmenu-server.onrender.com' ;
+    const backendUrl = 'https://digitalmenu-server.onrender.com';
     if (!backendUrl) return;
 
     try {
