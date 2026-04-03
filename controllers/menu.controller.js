@@ -1,5 +1,6 @@
 const MenuItem = require('../models/MenuItem');
 const { uploadToCloudinary, extractPublicId, deleteFromCloudinary } = require('../utils/cloudinary');
+const socketService = require('../services/socket.service');
 
 // Get all menu items (admin)
 exports.getAllMenuItems = async (req, res, next) => {
@@ -33,7 +34,7 @@ exports.getPublicMenu = async (req, res, next) => {
     const menuItems = await MenuItem.find({ 
       restaurant: rId, 
       isActive: true 
-    }).sort({ category: 1, name: 1 });
+    }).sort({ name: 1 });
     
     res.json({
       success: true,
@@ -71,7 +72,7 @@ exports.getMenuItem = async (req, res, next) => {
 // Create menu item
 exports.createMenuItem = async (req, res, next) => {
   try {
-    const { name, description, ingredients, preparationMethod, price, offerPrice, category, foodType } = req.body;
+    const { name, description, ingredients, preparationMethod, price, offerPrice, foodType } = req.body;
     
     let imageUrl = null;
     
@@ -90,9 +91,16 @@ exports.createMenuItem = async (req, res, next) => {
       price: parseFloat(price),
       offerPrice: offerPrice ? parseFloat(offerPrice) : null,
       image: imageUrl,
-      category: category || 'Other',
       foodType: foodType || 'Main Course'
     });
+    
+    // Emit real-time menu update to restaurant customers
+    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+      restaurantId: req.userId.toString(),
+      action: 'create',
+      menuItem 
+    });
+    
     
     res.status(201).json({
       success: true,
@@ -108,7 +116,7 @@ exports.createMenuItem = async (req, res, next) => {
 exports.updateMenuItem = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, description, ingredients, preparationMethod, price, offerPrice, isActive, category, foodType } = req.body;
+    const { name, description, ingredients, preparationMethod, price, offerPrice, isActive, foodType } = req.body;
     
     const menuItem = await MenuItem.findOne({ _id: id, restaurant: req.userId });
     
@@ -141,10 +149,16 @@ exports.updateMenuItem = async (req, res, next) => {
     if (price !== undefined) menuItem.price = parseFloat(price);
     if (offerPrice !== undefined) menuItem.offerPrice = offerPrice ? parseFloat(offerPrice) : null;
     if (isActive !== undefined) menuItem.isActive = isActive;
-    if (category !== undefined) menuItem.category = category;
     if (foodType !== undefined) menuItem.foodType = foodType;
     
     await menuItem.save();
+    
+    // Emit real-time menu update to restaurant customers
+    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+      restaurantId: req.userId.toString(),
+      action: 'update',
+      menuItem 
+    });
     
     res.json({
       success: true,
@@ -180,6 +194,14 @@ exports.deleteMenuItem = async (req, res, next) => {
     
     await MenuItem.findOneAndDelete({ _id: id, restaurant: req.userId });
     
+    // Emit real-time menu update to restaurant customers
+    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+      restaurantId: req.userId.toString(),
+      action: 'delete',
+      menuItemId: id 
+    });
+    
+    
     res.json({
       success: true,
       message: 'Menu item deleted successfully'
@@ -205,6 +227,14 @@ exports.toggleMenuItem = async (req, res, next) => {
     
     menuItem.isActive = !menuItem.isActive;
     await menuItem.save();
+    
+    // Emit real-time menu update to restaurant customers
+    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+      restaurantId: req.userId.toString(),
+      action: 'toggle',
+      menuItem 
+    });
+    
     
     res.json({
       success: true,

@@ -52,11 +52,6 @@ const menuItemSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
-  category: {
-    type: String,
-    trim: true,
-    default: 'Other'
-  },
   foodType: {
     type: String,
     trim: true,
