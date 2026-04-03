@@ -501,14 +501,17 @@ exports.verifyPayment = async (req, res, next) => {
 
     const enrichedOrder = await getEnrichedOrder(order);
 
-    // Emit update to admin room
+    // Emit update to admin and customer
     const io = req.app.get('io');
     if (io) {
       const adminRoom = (order.restaurant || req.userId)?.toString();
       const customerRoom = order.deviceId;
       io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      if (customerRoom) io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-      console.log(`[Socket] Order update emitted: ${order._id} room: ${adminRoom}`);
+      if (customerRoom) {
+        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+        io.to(customerRoom).emit('paymentVerified', enrichedOrder);
+      }
+      console.log(`[Socket] Payment verified emitted: ${order._id} room: ${adminRoom}`);
     }
 
     res.json({
@@ -566,14 +569,17 @@ exports.collectCash = async (req, res, next) => {
 
     const enrichedOrder = await getEnrichedOrder(order);
 
-    // Emit update to admin room
+    // Emit update to admin and customer
     const io = req.app.get('io');
     if (io) {
       const adminRoom = (order.restaurant || req.userId)?.toString();
       const customerRoom = order.deviceId;
       io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      if (customerRoom) io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-      console.log(`[Socket] Order update emitted: ${order._id} room: ${adminRoom}`);
+      if (customerRoom) {
+        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+        io.to(customerRoom).emit('paymentVerified', enrichedOrder);
+      }
+      console.log(`[Socket] Cash collected emitted: ${order._id} room: ${adminRoom}`);
     }
 
     res.json({
