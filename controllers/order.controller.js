@@ -221,8 +221,9 @@ exports.getAllOrders = async (req, res, next) => {
   try {
     const { search, status, date, month, year, paymentMethod } = req.query;
 
-    // Build query
-    let query = { restaurant: req.userId };
+    // Build query - convert userId to ObjectId for aggregation compatibility
+    const mongoose = require('mongoose');
+    let query = { restaurant: new mongoose.Types.ObjectId(req.userId) };
 
     // Search by order number (5-digit) or table number
     if (search) {
@@ -286,7 +287,10 @@ exports.getAllOrders = async (req, res, next) => {
               $cond: [
                 { $and: [
                   { $eq: ['$status', 'served'] },
-                  { $ne: ['$refund.status', 'refunded'] }
+                  { $or: [
+                    { $eq: [{ $ifNull: ['$refund.status', 'none'] }, 'none'] },
+                    { $ne: ['$refund.status', 'refunded'] }
+                  ]}
                 ]},
                 '$totalAmount',
                 0
@@ -327,7 +331,10 @@ exports.getAllOrders = async (req, res, next) => {
                 { $and: [
                   { $eq: ['$paymentMethod', 'cash'] },
                   { $eq: ['$status', 'served'] },
-                  { $ne: ['$refund.status', 'refunded'] }
+                  { $or: [
+                    { $eq: [{ $ifNull: ['$refund.status', 'none'] }, 'none'] },
+                    { $ne: ['$refund.status', 'refunded'] }
+                  ]}
                 ]},
                 '$totalAmount',
                 0
@@ -341,7 +348,10 @@ exports.getAllOrders = async (req, res, next) => {
                 { $and: [
                   { $eq: ['$paymentMethod', 'online'] },
                   { $eq: ['$status', 'served'] },
-                  { $ne: ['$refund.status', 'refunded'] }
+                  { $or: [
+                    { $eq: [{ $ifNull: ['$refund.status', 'none'] }, 'none'] },
+                    { $ne: ['$refund.status', 'refunded'] }
+                  ]}
                 ]},
                 '$totalAmount',
                 0
