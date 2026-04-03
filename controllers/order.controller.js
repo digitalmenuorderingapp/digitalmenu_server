@@ -285,7 +285,7 @@ exports.getAllOrders = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentStatus', 'VERIFIED'] },
+                  { $eq: ['$status', 'served'] },
                   { $ne: ['$refund.status', 'refunded'] }
                 ]},
                 '$totalAmount',
@@ -326,8 +326,8 @@ exports.getAllOrders = async (req, res, next) => {
               $cond: [
                 { $and: [
                   { $eq: ['$paymentMethod', 'cash'] },
-                  { $in: ['$paymentStatus', ['PENDING', 'VERIFIED']] },
-                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                  { $eq: ['$status', 'served'] },
+                  { $ne: ['$refund.status', 'refunded'] }
                 ]},
                 '$totalAmount',
                 0
@@ -340,8 +340,8 @@ exports.getAllOrders = async (req, res, next) => {
               $cond: [
                 { $and: [
                   { $eq: ['$paymentMethod', 'online'] },
-                  { $in: ['$paymentStatus', ['PENDING', 'VERIFIED']] },
-                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                  { $eq: ['$status', 'served'] },
+                  { $ne: ['$refund.status', 'refunded'] }
                 ]},
                 '$totalAmount',
                 0
