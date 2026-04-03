@@ -1,34 +1,35 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
-const mongoose = require('mongoose');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
-const { updateLastSeen } = require('./middleware/lastSeen.middleware');
+const { connectDB } = require('./config/db');
+const socketService = require('./services/socket.service');
 const { initCron } = require('./services/cron.service');
+const { systemMonitor } = require('./middleware/systemMonitor');
 
 dotenv.config();
 
 const app = express();
-app.set('trust proxy', 1); // Trust first proxy (Render/Vercel)
+app.set('trust proxy', 1);
 const server = http.createServer(app);
+
 const allowedOrigins = [
-  'https://digitalmenuorder.vercel.app', 'https://digitalmenu-superadmin.vercel.app', // Hardcoded production URL
-  'http://localhost:3001', 'http://localhost:3000'
+  'https://digitalmenuorder.vercel.app',
+  'https://digitalmenu-superadmin.vercel.app',
+  'http://localhost:3001',
+  'http://localhost:3000'
 ].filter(origin => origin && typeof origin === 'string')
   .map(origin => origin.trim().replace(/\/$/, ''));
 
 // CORS Check Function
 const checkOrigin = (origin, callback) => {
-  // Allow requests with no origin (like mobile apps or curl)
   if (!origin) return callback(null, true);
 
   const normalizedOrigin = origin.trim().replace(/\/$/, '');
   if (allowedOrigins.includes(normalizedOrigin)) {
     callback(null, true);
   } else {
-    // In production, you might want to be quieter
     if (process.env.NODE_ENV === 'development') {
       console.warn(`[CORS] Blocked Origin: ${origin}`);
     }
@@ -36,43 +37,13 @@ const checkOrigin = (origin, callback) => {
   }
 };
 
-// Socket.io configuration
-const io = new Server(server, {
-  cors: {
-    origin: checkOrigin,
-    credentials: true,
-    methods: ['GET', 'POST']
-  },
-  transports: ['polling', 'websocket'],
-  pingTimeout: 60000,
-  pingInterval: 25000
-});
-
-// Make io accessible to routers
+// Initialize Socket.IO
+const io = socketService.init(server, checkOrigin);
 app.set('io', io);
-
-// Socket.io connection logic
-io.on('connection', (socket) => {
-  // console.log(`[Socket] Client connected: ${socket.id}`);
-
-  socket.on('join', (room) => {
-    socket.join(room);
-    // console.log(`[Socket] ${socket.id} joined room: ${room}`);
-    // Log all rooms this socket is in
-    // console.log(`[Socket] ${socket.id} is now in rooms:`, Array.from(socket.rooms));
-  });
-
-  socket.on('disconnect', () => {
-    // console.log(`[Socket] Client disconnected: ${socket.id}`);
-  });
-});
 
 // Middleware
 app.use(express.json());
 app.use(cookieParser());
-
-// System monitoring (Request tracking)
-const { systemMonitor } = require('./middleware/systemMonitor');
 app.use(systemMonitor);
 
 // CORS configuration
@@ -84,30 +55,6 @@ app.use(cors({
 }));
 
 // Database connection
-const connectDB = async () => {
-  try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digitalmenu');
-    console.log(`MongoDB Connected`);
-
-    // Ensure Superadmin Account
-    const Superadmin = require('./models/Superadmin');
-    const superadminEmail = 'sahin401099@gmail.com';
-    const existingSuperadmin = await Superadmin.findOne({ email: superadminEmail });
-
-    if (!existingSuperadmin) {
-      console.log('--- CREATING SUPERADMIN ACCOUNT ---');
-      await Superadmin.create({
-        email: superadminEmail,
-        name: 'System Admin'
-      });
-      console.log(`✅ Superadmin account created: ${superadminEmail}`);
-    }
-  } catch (error) {
-    console.error(`Error: ${error.message}`);
-    process.exit(1);
-  }
-};
-
 connectDB().then(() => {
   // Initialize cron jobs
   initCron();
@@ -116,8 +63,7 @@ connectDB().then(() => {
   const { emitServiceStatus } = require('./controllers/superadmin.controller');
   setInterval(() => {
     emitServiceStatus(io);
-  }, 30000); // Emit every 30 seconds
-  // console.log('[ServiceStatus] Periodic emission started (every 30s)');
+  }, 30000);
 });
 
 // Scheduled task to mark inactive devices offline
@@ -137,7 +83,7 @@ setInterval(async () => {
   } catch (error) {
     console.error('Error marking devices offline:', error);
   }
-}, 60000); // Run every minute
+}, 60000);
 
 // Routes
 app.use('/api/auth', require('./routes/auth.routes'));
