@@ -126,6 +126,71 @@ exports.getOrdersByDevice = async (req, res, next) => {
   }
 };
 
+// Update customer profile for all orders by device
+exports.updateCustomerProfile = async (req, res, next) => {
+  try {
+    const { deviceId, customerName, customerPhone, numberOfPersons } = req.body;
+
+    if (!deviceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'deviceId is required'
+      });
+    }
+
+    // Update all pending orders for this device
+    const result = await Order.updateMany(
+      { 
+        deviceId, 
+        status: { $in: ['placed', 'preparing'] } // Only update active orders
+      },
+      {
+        $set: {
+          customerName: customerName || undefined,
+          customerPhone: customerPhone || undefined,
+          numberOfPersons: numberOfPersons || undefined
+        }
+      }
+    );
+
+    // Get updated orders to emit via socket
+    const updatedOrders = await Order.find({
+      deviceId,
+      status: { $in: ['placed', 'preparing'] }
+    });
+
+    // Emit updates to restaurant admins
+    const io = req.app.get('io');
+    if (io && updatedOrders.length > 0) {
+      const enrichedOrders = await Promise.all(
+        updatedOrders.map(o => getEnrichedOrder(o))
+      );
+      
+      // Group by restaurant and emit
+      const ordersByRestaurant = enrichedOrders.reduce((acc, order) => {
+        const restId = order.restaurant?.toString();
+        if (!acc[restId]) acc[restId] = [];
+        acc[restId].push(order);
+        return acc;
+      }, {});
+
+      Object.entries(ordersByRestaurant).forEach(([restId, orders]) => {
+        orders.forEach(order => {
+          io.to(restId).emit('orderUpdate', order);
+        });
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Updated ${result.modifiedCount} order(s) with new customer info`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Get orders by table number (admin)
 exports.getOrdersByTable = async (req, res, next) => {
   try {
