@@ -18,8 +18,10 @@ exports.getRestaurantDetails = async (req, res) => {
       });
     }
 
-    // Find restaurant by ID
-    const restaurant = await RestaurantAdmin.findById(id).select('restaurantName ownerName email address phone description logo');
+    // Find restaurant by ID (lean for speed)
+    const restaurant = await RestaurantAdmin.findById(id)
+      .select('restaurantName ownerName email address phone description logo')
+      .lean();
 
     if (!restaurant) {
       return res.status(404).json({
@@ -68,8 +70,20 @@ exports.getPublicMenu = async (req, res) => {
       });
     }
 
-    // Find restaurant by ID
-    const restaurant = await RestaurantAdmin.findById(restaurantId).select('restaurantName ownerName logo');
+    // Run queries in parallel for speed
+    const [restaurant, menuItems, tableDoc] = await Promise.all([
+      RestaurantAdmin.findById(restaurantId)
+        .select('restaurantName ownerName logo')
+        .lean(),
+      MenuItem.find({ 
+        restaurant: restaurantId,
+        isActive: true 
+      })
+        .select('name description price offerPrice image foodType isAvailable category discountPercentage')
+        .sort({ category: 1, name: 1 })
+        .lean(),
+      table ? Table.findOne({ restaurant: restaurantId, tableNumber: table }).lean() : null
+    ]);
 
     if (!restaurant) {
       return res.status(404).json({
@@ -78,29 +92,14 @@ exports.getPublicMenu = async (req, res) => {
       });
     }
 
-    // Get menu items for this restaurant
-    const menuItems = await MenuItem.find({ 
-      restaurant: restaurantId,
-      isActive: true 
-    }).sort({ category: 1, name: 1 });
-
-    // Group items by category
-    const categorizedItems = menuItems.reduce((acc, item) => {
+    // Fast category grouping using object (single pass)
+    const categorizedItems = {};
+    for (const item of menuItems) {
       const category = item.category || 'Other';
-      if (!acc[category]) {
-        acc[category] = [];
+      if (!categorizedItems[category]) {
+        categorizedItems[category] = [];
       }
-      acc[category].push(item);
-      return acc;
-    }, {});
-
-    // Fetch table details if table number is provided
-    let tableCapacity = 8; // Default
-    if (table) {
-      const tableDoc = await Table.findOne({ restaurant: restaurantId, tableNumber: table });
-      if (tableDoc) {
-        tableCapacity = tableDoc.seats;
-      }
+      categorizedItems[category].push(item);
     }
 
     res.status(200).json({
@@ -113,7 +112,7 @@ exports.getPublicMenu = async (req, res) => {
           logo: restaurant.logo
         },
         tableNumber: table,
-        tableCapacity: tableCapacity,
+        tableCapacity: tableDoc?.seats || 8,
         menuItems: categorizedItems
       }
     });
@@ -143,21 +142,19 @@ exports.verifyQRCode = async (req, res) => {
       });
     }
 
-    // Find restaurant by ID
-    const restaurant = await RestaurantAdmin.findById(restaurantId).select('restaurantName ownerName email isActive');
+    // Run queries in parallel
+    const [restaurant, tableDoc] = await Promise.all([
+      RestaurantAdmin.findById(restaurantId)
+        .select('restaurantName ownerName isActive')
+        .lean(),
+      Table.findOne({ restaurant: restaurantId, tableNumber }).lean()
+    ]);
 
     if (!restaurant) {
       return res.status(404).json({
         success: false,
         message: 'Restaurant not found'
       });
-    }
-
-    // Fetch table details
-    let tableCapacity = 8; // Default
-    const tableDoc = await Table.findOne({ restaurant: restaurantId, tableNumber: tableNumber });
-    if (tableDoc) {
-      tableCapacity = tableDoc.seats;
     }
 
     res.status(200).json({
@@ -167,7 +164,7 @@ exports.verifyQRCode = async (req, res) => {
         restaurantId: restaurant._id,
         ownerName: restaurant.ownerName,
         tableNumber: tableNumber,
-        tableCapacity: tableCapacity,
+        tableCapacity: tableDoc?.seats || 8,
         verified: true
       }
     });

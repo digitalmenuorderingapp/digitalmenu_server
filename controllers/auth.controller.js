@@ -247,8 +247,8 @@ exports.login = async (req, res, next) => {
 
     await user.save();
 
-    // Log successful login
-    await logActivity({
+    // Fire-and-forget logging (don't block response)
+    logActivity({
       type: 'auth',
       action: 'User Login',
       user: email,
@@ -257,7 +257,7 @@ exports.login = async (req, res, next) => {
         deviceId: deviceIdentifier,
         deviceName: deviceName || 'Unknown Device'
       }
-    });
+    }).catch(err => console.error('[Auth] Failed to log activity:', err));
 
     // Set cookies
     res.cookie('accessToken', accessToken, accessCookieOptions);

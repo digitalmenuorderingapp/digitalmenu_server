@@ -13,7 +13,7 @@ const getEnrichedOrder = async (order) => {
   return orderObj;
 };
 
-// Create order
+// Create order - Optimized for speed
 exports.createOrder = async (req, res, next) => {
   try {
     const { 
@@ -32,6 +32,7 @@ exports.createOrder = async (req, res, next) => {
       specialInstructions
     } = req.body;
 
+    // 1. Create order (fast - single DB write)
     const order = await Order.create({
       restaurant: restaurantId || req.userId,
       tableNumber: orderType === 'dine-in' ? tableNumber : undefined,
@@ -49,43 +50,37 @@ exports.createOrder = async (req, res, next) => {
       status: 'placed'
     });
 
-    // Record Initial Payment Transaction (as PENDING)
-    try {
-      await ledgerService.recordTransaction({
-        order,
-        type: 'PAYMENT',
-        amount: order.totalAmount,
-        mode: order.paymentMethod,
-        status: 'PENDING'
-      });
-    } catch (ledgerError) {
-      console.error('[OrderController] Failed to record initial transaction:', ledgerError);
-    }
+    // 2. Return response immediately (don't wait for async operations)
+    const basicOrder = order.toObject();
+    basicOrder.transactions = []; // Will be populated async
 
-    // Emit real-time event to restaurant admin
+    res.status(201).json({
+      success: true,
+      message: 'Order placed successfully',
+      data: basicOrder
+    });
+
+    // 3. Do async work AFTER response (non-blocking)
+    // Fire-and-forget ledger recording
+    ledgerService.recordTransaction({
+      order,
+      type: 'PAYMENT',
+      amount: order.totalAmount,
+      mode: order.paymentMethod,
+      status: 'PENDING'
+    }).catch(err => console.error('[OrderController] Failed to record transaction:', err));
+
+    // Fire-and-forget socket emission
     const io = req.app.get('io');
     if (io) {
       const targetId = restaurantId || req.userId;
       const roomId = targetId?.toString();
       
-      // Emit to admin for notification and sound
-      io.to(roomId).emit('newOrder', order);
-      
-      // Emit to admin for instant state synchronization
-      const enrichedOrder = await getEnrichedOrder(order);
-      io.to(roomId).emit('orderUpdate', enrichedOrder);
-      
-      console.log(`[Socket] New order emitted to room: ${roomId}`);
+      // Emit basic order immediately (admin can refresh for full data)
+      io.to(roomId).emit('newOrder', basicOrder);
+      io.to(roomId).emit('orderUpdate', basicOrder);
     }
 
-    // Return enriched order
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    res.status(201).json({
-      success: true,
-      message: 'Order placed successfully',
-      data: enrichedOrder
-    });
   } catch (error) {
     next(error);
   }
@@ -268,71 +263,115 @@ exports.getAllOrders = async (req, res, next) => {
       };
     }
 
+    // 1. Fetch orders (limited) with lean for speed
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(100)
+      .lean();
 
-    // Calculate Stats for the CURRENT context (query)
-    // We execute a separate aggregate for stats to include ALL orders in the range, not just the limited 100
-    const statsData = await Order.find(query);
-    
-    const stats = {
-      totalOrders: statsData.length,
-      placed: statsData.filter(o => o.status === 'placed').length,
-      preparing: statsData.filter(o => o.status === 'preparing').length,
-      served: statsData.filter(o => o.status === 'served').length,
-      rejected: statsData.filter(o => o.status === 'rejected').length,
-      cancelled: statsData.filter(o => o.status === 'cancelled').length,
-      
-      // Payment Stats
-      totalRevenue: statsData
-        .filter(o => o.paymentStatus === 'VERIFIED' && o.refund?.status !== 'refunded')
-        .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
-      
-      onlinePending: statsData.filter(o => 
-        o.paymentMethod === 'online' && 
-        o.paymentStatus === 'PENDING' &&
-        !['rejected', 'cancelled'].includes(o.status)
-      ).length,
-      
-      cashPending: statsData.filter(o => 
-        o.paymentMethod === 'cash' && 
-        o.paymentStatus === 'PENDING' &&
-        !['rejected', 'cancelled'].includes(o.status)
-      ).length,
+    // 2. Aggregate stats in MongoDB (single query, much faster)
+    const statsPipeline = [
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          placed: { $sum: { $cond: [{ $eq: ['$status', 'placed'] }, 1, 0] } },
+          preparing: { $sum: { $cond: [{ $eq: ['$status', 'preparing'] }, 1, 0] } },
+          served: { $sum: { $cond: [{ $eq: ['$status', 'served'] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ['$status', 'rejected'] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+          totalRevenue: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentStatus', 'VERIFIED'] },
+                  { $ne: ['$refund.status', 'refunded'] }
+                ]},
+                '$totalAmount',
+                0
+              ]
+            }
+          },
+          onlinePending: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentMethod', 'online'] },
+                  { $eq: ['$paymentStatus', 'PENDING'] },
+                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                ]},
+                1,
+                0
+              ]
+            }
+          },
+          cashPending: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentMethod', 'cash'] },
+                  { $eq: ['$paymentStatus', 'PENDING'] },
+                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                ]},
+                1,
+                0
+              ]
+            }
+          },
+          totalRefunds: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, 1, 0] } },
+          totalRefundAmount: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, '$refund.amount', 0] } },
+          cashGross: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentMethod', 'cash'] },
+                  { $in: ['$paymentStatus', ['PENDING', 'VERIFIED']] },
+                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                ]},
+                '$totalAmount',
+                0
+              ]
+            }
+          },
+          cashRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, { $cond: [{ $eq: ['$paymentMethod', 'cash'] }, '$refund.amount', 0] }, 0] } },
+          onlineGross: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentMethod', 'online'] },
+                  { $in: ['$paymentStatus', ['PENDING', 'VERIFIED']] },
+                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                ]},
+                '$totalAmount',
+                0
+              ]
+            }
+          },
+          onlineRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, { $cond: [{ $eq: ['$paymentMethod', 'online'] }, '$refund.amount', 0] }, 0] } }
+        }
+      }
+    ];
 
-      totalRefunds: statsData.filter(o => o.refund?.status === 'refunded').length,
-      totalRefundAmount: statsData
-        .filter(o => o.refund?.status === 'refunded')
-        .reduce((sum, o) => sum + (o.refund?.amount || 0), 0),
-      
-      // Breakdown Stats for Cash/Online Summary (Gross includes Pending, Net excludes Pending)
-      cashGross: statsData
-        .filter(o => o.paymentMethod === 'cash' && ['PENDING', 'VERIFIED'].includes(o.paymentStatus) && !['rejected', 'cancelled'].includes(o.status))
-        .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
-      cashRefunded: statsData
-        .filter(o => o.paymentMethod === 'cash' && o.refund?.status === 'refunded')
-        .reduce((sum, o) => sum + (o.refund?.amount || 0), 0),
-        
-      onlineGross: statsData
-        .filter(o => o.paymentMethod === 'online' && ['PENDING', 'VERIFIED'].includes(o.paymentStatus) && !['rejected', 'cancelled'].includes(o.status))
-        .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
-      onlineRefunded: statsData
-        .filter(o => o.paymentMethod === 'online' && o.refund?.status === 'refunded')
-        .reduce((sum, o) => sum + (o.refund?.amount || 0), 0)
+    const [statsResult] = await Order.aggregate(statsPipeline);
+    const stats = statsResult || {
+      totalOrders: 0, placed: 0, preparing: 0, served: 0, rejected: 0, cancelled: 0,
+      totalRevenue: 0, onlinePending: 0, cashPending: 0, totalRefunds: 0, totalRefundAmount: 0,
+      cashGross: 0, cashRefunded: 0, onlineGross: 0, onlineRefunded: 0
     };
 
-    // Attach transactions for each order
+    // Attach transactions for each order (batch query)
     const orderIds = orders.map(o => o._id);
-    const transactions = await LedgerTransaction.find({ orderId: { $in: orderIds } });
+    const transactions = orderIds.length > 0 
+      ? await LedgerTransaction.find({ orderId: { $in: orderIds } }).lean()
+      : [];
 
-    const enrichedOrders = orders.map(o => {
-      const orderObj = o.toObject();
-      orderObj.transactions = transactions.filter(tx => 
+    const enrichedOrders = orders.map(o => ({
+      ...o,
+      transactions: transactions.filter(tx => 
         tx.orderId && tx.orderId.toString() === o._id.toString()
-      );
-      return orderObj;
-    });
+      )
+    }));
 
     res.json({
       success: true,
