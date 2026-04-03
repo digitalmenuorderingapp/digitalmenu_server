@@ -14,8 +14,8 @@ const app = express();
 app.set('trust proxy', 1); // Trust first proxy (Render/Vercel)
 const server = http.createServer(app);
 const allowedOrigins = [
-  'https://digitalmenuorder.vercel.app', 'https://digitalmenu-superadmin.vercel.app'  // Hardcoded production URL
-
+  'https://digitalmenuorder.vercel.app', 'https://digitalmenu-superadmin.vercel.app', // Hardcoded production URL
+  'http://localhost:3001', 'http://localhost:3000'
 ].filter(origin => origin && typeof origin === 'string')
   .map(origin => origin.trim().replace(/\/$/, ''));
 
