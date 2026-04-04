@@ -725,18 +725,21 @@ exports.sendDeleteAccountOtp = async (req, res, next) => {
     });
 
     if (!emailInfo || !emailInfo.messageId) {
-      return res.status(500).json({ success: false, message: 'Failed to send email. Please try again.' });
+      throw new Error('Email service failed to generate messageId');
     }
 
     res.json({
       success: true,
       message: 'Account deletion OTP sent to your email',
-      emailSent: true,
-      messageId: emailInfo.messageId
+      emailSent: true
     });
   } catch (error) {
     console.error('Send delete account OTP error:', error);
-    res.status(500).json({ success: false, message: 'Failed to send email. Please try again.' });
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to send email. Please try again.',
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined 
+    });
   }
 };
 
