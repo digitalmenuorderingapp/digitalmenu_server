@@ -718,14 +718,26 @@ exports.sendDeleteAccountOtp = async (req, res, next) => {
     user.deleteAccountOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
     await user.save();
 
-    const emailInfo = await emailService.sendEmail({
-      to: user.email,
-      subject: 'DigitalMenu - Account Deletion Verification',
-      html: deleteAccountOtpTemplate(otp)
-    });
+    // Try to send email, but don't fail if email service is down
+    let emailSent = false;
+    try {
+      const emailInfo = await emailService.sendEmail({
+        to: user.email,
+        subject: 'DigitalMenu - Account Deletion Verification',
+        html: deleteAccountOtpTemplate(otp)
+      });
+      emailSent = !!(emailInfo && emailInfo.messageId);
+    } catch (emailError) {
+      console.error('Email service error (delete account OTP):', emailError.message);
+      // Continue - OTP is saved, user can request again or contact support
+    }
 
-    if (!emailInfo || !emailInfo.messageId) {
-      throw new Error('Email service failed to generate messageId');
+    if (!emailSent) {
+      return res.status(503).json({
+        success: false,
+        message: 'Email service temporarily unavailable. Please try again later or contact support.',
+        emailSent: false
+      });
     }
 
     res.json({
