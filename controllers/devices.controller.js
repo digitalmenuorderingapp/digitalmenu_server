@@ -107,7 +107,7 @@ exports.revokeDevice = async (req, res, next) => {
       currentSession.loggedOutAt = new Date();
       currentSession.duration = Math.floor((currentSession.loggedOutAt - currentSession.loggedInAt) / 1000);
     }
-    
+    user.markModified('refreshTokens');
     await user.save();
 
     res.json({
@@ -134,18 +134,47 @@ exports.removeDevice = async (req, res, next) => {
       });
     }
 
-    const device = user.refreshTokens[deviceIndex];
-    
-    // Safety check: Don't allow removing active devices directly? 
-    // Actually, user wants "for logged out devices", but if they call this, we just remove it.
-    // If it's the current deviceId (passed in headers maybe?), we should caution.
-    
     user.refreshTokens.splice(deviceIndex, 1);
+    user.markModified('refreshTokens');
     await user.save();
 
     res.json({
       success: true,
       message: 'Device removed successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Permanently remove ALL OTHER devices except the current one
+exports.removeAllOtherDevices = async (req, res, next) => {
+  try {
+    const user = await RestaurantAdmin.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, message: 'No session found' });
+    }
+
+    const { hashToken } = require('../utils/token');
+    const hashed = hashToken(refreshToken);
+    
+    // Keep only the token that matches the current refresh token
+    const initialCount = user.refreshTokens.length;
+    user.refreshTokens = user.refreshTokens.filter(t => t.tokenHash === hashed);
+    
+    if (user.refreshTokens.length === initialCount) {
+      return res.json({ success: true, message: 'No other devices were found' });
+    }
+
+    user.markModified('refreshTokens');
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Removed ${initialCount - user.refreshTokens.length} other devices`
     });
   } catch (error) {
     next(error);

@@ -137,7 +137,7 @@ exports.verifyOtp = async (req, res, next) => {
     user.shortId = shortId;
     user.verificationCode = undefined;
     user.verificationCodeExpires = undefined;
-    
+
     // Set trial initialization
     user.subscription = {
       type: 'trial',
@@ -145,7 +145,7 @@ exports.verifyOtp = async (req, res, next) => {
       startDate: new Date(),
       expiryDate: expiryDate
     };
-    
+
     await user.save();
 
     // Now log them in (Generate tokens)
@@ -332,6 +332,7 @@ exports.logout = async (req, res, next) => {
           }
           token.isOnline = false;
           token.revokedAt = new Date();
+          user.markModified('refreshTokens');
           await user.save();
         }
       }
@@ -370,9 +371,9 @@ exports.refresh = async (req, res, next) => {
     const hashed = hashToken(refreshToken);
 
     // Find admin user with this token
-    const user = await RestaurantAdmin.findOne({ 
+    const user = await RestaurantAdmin.findOne({
       _id: decoded.userId,
-      'refreshTokens.tokenHash': hashed 
+      'refreshTokens.tokenHash': hashed
     });
 
     if (!user) {
@@ -505,14 +506,15 @@ exports.logoutDevice = async (req, res, next) => {
 
     token.revokedAt = new Date();
     token.isOnline = false;
-    
+
     // End current session if active
     const currentSession = token.sessions[token.sessions.length - 1];
     if (currentSession && !currentSession.loggedOutAt) {
       currentSession.loggedOutAt = new Date();
       currentSession.duration = Math.floor((currentSession.loggedOutAt - currentSession.loggedInAt) / 1000);
     }
-    
+
+    user.markModified('refreshTokens');
     await user.save();
 
     res.json({

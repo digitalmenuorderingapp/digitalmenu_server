@@ -22,8 +22,9 @@ exports.protect = async (req, res, next) => {
       // Verify access token
       const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
       req.userId = decoded.userId;
-
+      
       // Fetch user to check status and subscription
+      // We need refreshTokens to check for revocation
       const user = await RestaurantAdmin.findById(decoded.userId).select('subscription role refreshTokens');
       
       if (!user) {
@@ -34,6 +35,38 @@ exports.protect = async (req, res, next) => {
           success: false,
           message: 'User not found'
         });
+      }
+
+      // 1. Determine Device ID
+      let deviceId = decoded.deviceId;
+      let tokenRecord = null;
+
+      if (deviceId) {
+        // Find the record for this specific device
+        tokenRecord = user.refreshTokens.find(t => t.deviceId === deviceId);
+      } else if (refreshToken) {
+        // Fallback for legacy tokens: check by refresh token hash
+        const hashed = hashToken(refreshToken);
+        tokenRecord = user.refreshTokens.find(t => t.tokenHash === hashed);
+      }
+
+      // 2. STRICTOR CHECK: Revocation
+      // If we found a record but it's revoked, REJECT immediately.
+      // This is the core of the "Instant Logout" fix.
+      if (tokenRecord && tokenRecord.revokedAt) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(`[AUTH] 401 - Device Revoked: ${tokenRecord.deviceId}`);
+        }
+        return res.status(401).json({
+          success: false,
+          message: 'Session revoked. Please login again.',
+          isRevoked: true
+        });
+      }
+
+      // Set device ID for downstream use (like lastSeen)
+      if (tokenRecord) {
+        req.deviceId = tokenRecord.deviceId;
       }
 
       // Enforcement Logic for Restaurant Admins
@@ -62,21 +95,6 @@ exports.protect = async (req, res, next) => {
           });
         }
       }
-      
-      // Try to get device ID from refresh token
-      if (refreshToken) {
-        try {
-          const hashed = hashToken(refreshToken);
-          const tokenRecord = user.refreshTokens.find(t => t.tokenHash === hashed && !t.revokedAt);
-          
-          if (tokenRecord) {
-            req.deviceId = tokenRecord.deviceId;
-          }
-        } catch (error) {
-          console.error('❌ Error extracting device ID:', error);
-        }
-      }
-      
       next();
     } catch (error) {
       if (process.env.NODE_ENV === 'development') {

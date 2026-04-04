@@ -9,12 +9,12 @@ const updateLastSeen = async (req, res, next) => {
     // Only update for authenticated requests with a device ID
     if (req.userId && req.deviceId) {
       const now = new Date();
-      
+
       // Update for RestaurantAdmin first
       const restaurantResult = await RestaurantAdmin.updateOne(
         { _id: req.userId, 'refreshTokens.deviceId': req.deviceId },
-        { 
-          $set: { 
+        {
+          $set: {
             'refreshTokens.$.lastSeen': now,
             'refreshTokens.$.isOnline': true
           }
@@ -25,8 +25,8 @@ const updateLastSeen = async (req, res, next) => {
       if (restaurantResult.matchedCount === 0) {
         await Superadmin.updateOne(
           { _id: req.userId, 'refreshTokens.deviceId': req.deviceId },
-          { 
-            $set: { 
+          {
+            $set: {
               'refreshTokens.$.lastSeen': now,
               'refreshTokens.$.isOnline': true
             }
@@ -34,7 +34,7 @@ const updateLastSeen = async (req, res, next) => {
         );
       }
     }
-    
+
     next();
   } catch (error) {
     // Don't block the request if update fails
