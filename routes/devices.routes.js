@@ -9,8 +9,11 @@ router.get('/', protect, devicesController.getDevices);
 // Get specific device activity details
 router.get('/:deviceId', protect, devicesController.getDeviceActivity);
 
-// Revoke a specific device
+// Revoke a specific device (logout)
 router.delete('/:deviceId', protect, devicesController.revokeDevice);
+
+// Permanently remove a specific device entry
+router.delete('/:deviceId/remove', protect, devicesController.removeDevice);
 
 // Get device statistics
 router.get('/stats/summary', protect, devicesController.getDeviceStats);

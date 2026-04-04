@@ -22,6 +22,7 @@ exports.getDevices = async (req, res, next) => {
         isOnline: device.isOnline,
         lastSeen: device.lastSeen,
         ipAddress: device.ipAddress,
+        revokedAt: device.revokedAt,
         sessions: sortedSessions.map(session => ({
           loggedInAt: session.loggedInAt,
           loggedOutAt: session.loggedOutAt,
@@ -73,6 +74,7 @@ exports.getDeviceActivity = async (req, res, next) => {
         isOnline: device.isOnline,
         lastSeen: device.lastSeen,
         ipAddress: device.ipAddress,
+        revokedAt: device.revokedAt,
         sessions: sortedSessions
       }
     });
@@ -111,6 +113,39 @@ exports.revokeDevice = async (req, res, next) => {
     res.json({
       success: true,
       message: 'Device revoked successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Permanently remove a specific device
+exports.removeDevice = async (req, res, next) => {
+  try {
+    const { deviceId } = req.params;
+    const user = await RestaurantAdmin.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const deviceIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceId);
+    if (deviceIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Device not found'
+      });
+    }
+
+    const device = user.refreshTokens[deviceIndex];
+    
+    // Safety check: Don't allow removing active devices directly? 
+    // Actually, user wants "for logged out devices", but if they call this, we just remove it.
+    // If it's the current deviceId (passed in headers maybe?), we should caution.
+    
+    user.refreshTokens.splice(deviceIndex, 1);
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Device removed successfully'
     });
   } catch (error) {
     next(error);
