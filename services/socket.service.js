@@ -35,6 +35,8 @@ class SocketService {
    */
   setupEventHandlers() {
     this.io.on('connection', (socket) => {
+      console.log(`[Socket] New client connected: ${socket.id}`);
+      
       // Handle join room
       socket.on('join', (room) => {
         socket.join(room);

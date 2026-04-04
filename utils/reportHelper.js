@@ -24,7 +24,8 @@ exports.sendDetailedReportEmail = async (options) => {
     dateRange, 
     subject, 
     customSummary = {}, 
-    additionalAttachments = [] 
+    additionalAttachments = [],
+    menuItems = []
   } = options;
 
   const userId = restaurant._id;
@@ -47,7 +48,8 @@ exports.sendDetailedReportEmail = async (options) => {
     {
       dateRange: { from: dateRange.from, to: dateRange.to },
       reportType: emailType === 'DELETION' ? 'Final Export' : 'Monthly',
-      includeOnlyVerified: true
+      includeOnlyVerified: true,
+      menuItems: menuItems
     }
   );
 

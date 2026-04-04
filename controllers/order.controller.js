@@ -93,20 +93,30 @@ exports.handleOrderAction = async (req, res, next) => {
   try {
     const { id: orderId } = req.params;
     const { action, payload = {} } = req.body;
-    const adminId = req.userId; // Provided by protect middleware
+    const adminId = req.userId;
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
 
-    const update = {};
+    const update = { statusHistory: order.statusHistory || [] };
     const now = new Date();
-    let emitEvent = 'orderUpdate'; 
     let ledgerType = null;
     let ledgerStatus = 'PENDING';
     let ledgerAmount = 0;
+    let ledgerMode = null;
+
+    const addHistory = (reason = '') => {
+      update.statusHistory.push({
+        action,
+        status: update.status || order.status,
+        paymentStatus: update.paymentStatus || order.paymentStatus,
+        reason: reason || payload.reason || '',
+        updatedBy: adminId,
+        updatedAt: now
+      });
+    };
 
     switch (action) {
-
       case "VERIFY_PAYMENT":
         if (order.paymentMethod !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be verified." });
@@ -116,80 +126,99 @@ exports.handleOrderAction = async (req, res, next) => {
         update.paymentDueStatus = "CLEAR";
         update.collectedAt = now;
         update.collectedBy = adminId;
-        if (payload.utr) update.utr = payload.utr.slice(-6);
+        if (payload.utr) update.utr = payload.utr.toString().slice(-6);
         
         ledgerType = 'PAYMENT';
         ledgerStatus = 'VERIFIED';
         ledgerAmount = order.totalAmount;
+        ledgerMode = 'ONLINE';
+        addHistory();
         break;
 
       case "REQUEST_RETRY":
         if (order.paymentMethod !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be marked for retry." });
         }
+        if ((order.retryCount || 0) >= 3) {
+          return res.status(400).json({ success: false, message: "Max retry limit (3) reached. Please mark as UNPAID." });
+        }
         update.paymentStatus = "RETRY";
         update.retryCount = (order.retryCount || 0) + 1;
-        emitEvent = 'orderStatusUpdate'; // Standardize on status update
+        addHistory();
         break;
 
       case "MARK_UNPAID":
         update.paymentStatus = "UNPAID";
-        if (["PLACED", "ACCEPTED"].includes(order.status)) {
+        if (!["COMPLETED", "REJECTED"].includes(order.status)) {
           update.status = "REJECTED";
+          update.rejectionReason = payload.reason || "Payment not received";
         }
         if (order.status === "COMPLETED") {
           update.paymentDueStatus = "DUE";
         }
+        addHistory(payload.reason);
         break;
 
-      case "COLLECT_PAYMENT":
-        update.paymentStatus = "VERIFIED";
-        update.collectedVia = payload.method; // CASH / ONLINE
-        update.paymentDueStatus = "CLEAR";
-        update.collectedAt = now;
-        update.collectedBy = adminId;
-        if (payload.method === "ONLINE" && payload.utr) {
-          update.utr = payload.utr.slice(-6);
+      case "ACCEPT_ORDER":
+        if (order.status !== 'PLACED') {
+          return res.status(400).json({ success: false, message: "Only PLACED orders can be accepted." });
         }
-        
-        ledgerType = 'PAYMENT';
-        ledgerStatus = 'VERIFIED';
-        ledgerAmount = order.totalAmount;
+        update.status = "ACCEPTED";
+        addHistory();
         break;
 
       case "REJECT_ORDER":
-        if (order.status !== 'PLACED') {
-          return res.status(400).json({ success: false, message: "Can only reject orders in PLACED state." });
+        if (["COMPLETED", "REJECTED", "CANCELLED"].includes(order.status)) {
+          return res.status(400).json({ success: false, message: `Cannot reject order in ${order.status} state.` });
         }
         update.status = "REJECTED";
         update.rejectionReason = payload.reason || "Order rejected by admin";
         if (order.paymentStatus === "VERIFIED") {
           update['refund.status'] = "PENDING";
           update['refund.amount'] = order.totalAmount;
-          update['refund.method'] = (order.collectedVia === 'NOT_COLLECTED') ? order.paymentMethod : order.collectedVia;
+          update['refund.method'] = order.collectedVia === 'CASH' ? 'COUNTER' : 'ONLINE';
         } else {
           update['refund.status'] = "NOT_REQUIRED";
         }
+        addHistory(payload.reason);
         break;
 
-      case "CANCEL_ORDER":
-        if (order.status !== 'PLACED') {
-          return res.status(400).json({ success: false, message: "Cannot cancel order once it is being prepared or completed." });
+      case "COMPLETE_ORDER": // SERVE
+        if (!["ACCEPTED", "PLACED"].includes(order.status)) {
+          return res.status(400).json({ success: false, message: "Order must be PLACED or ACCEPTED to be served." });
         }
-        update.status = "CANCELLED";
-        update.cancellationReason = payload.reason || "Order cancelled.";
-        if (order.paymentStatus === "VERIFIED") {
-          update['refund.status'] = "PENDING";
-          update['refund.amount'] = order.totalAmount;
-          update['refund.method'] = (order.collectedVia === 'NOT_COLLECTED') ? order.paymentMethod : order.collectedVia;
+        update.status = "COMPLETED";
+        if (order.paymentStatus !== 'VERIFIED') {
+          update.paymentDueStatus = "DUE";
         } else {
-          update['refund.status'] = "NOT_REQUIRED";
+          update.paymentDueStatus = "CLEAR";
         }
+        addHistory();
+        break;
+
+      case "COLLECT_PAYMENT":
+        if (!['CASH', 'ONLINE'].includes(payload.method)) {
+          return res.status(400).json({ success: false, message: "Invalid collection method. Use CASH or ONLINE." });
+        }
+        update.paymentStatus = "VERIFIED";
+        update.collectedVia = payload.method;
+        update.paymentDueStatus = "CLEAR";
+        update.collectedAt = now;
+        update.collectedBy = adminId;
+        if (payload.method === "ONLINE" && payload.utr) {
+          update.utr = payload.utr.toString().slice(-6);
+        }
+        
+        ledgerType = 'PAYMENT';
+        ledgerStatus = 'VERIFIED';
+        ledgerAmount = order.totalAmount;
+        ledgerMode = payload.method === 'CASH' ? 'COUNTER' : 'ONLINE';
+        addHistory();
         break;
 
       case "COMPLETE_REFUND":
         if (!order.refund || order.refund.status !== 'PENDING') {
-          return res.status(400).json({ success: false, message: "Only pending refunds can be completed." });
+          return res.status(400).json({ success: false, message: "No pending refund found for this order." });
         }
         update['refund.status'] = "COMPLETED";
         update['refund.processedAt'] = now;
@@ -197,88 +226,51 @@ exports.handleOrderAction = async (req, res, next) => {
         ledgerType = 'REFUND';
         ledgerStatus = 'VERIFIED';
         ledgerAmount = -order.totalAmount;
-        break;
-
-      case "RETRY_PAYMENT":
-        update.paymentStatus = "PENDING";
-        if (payload.method) update.paymentMethod = payload.method;
-        if (payload.method === "ONLINE" && payload.utr) {
-          update.utr = payload.utr.slice(-6);
-        }
-        break;
-
-      case "ACCEPT_ORDER":
-        if (order.paymentMethod === 'ONLINE' && order.paymentStatus !== 'VERIFIED') {
-          return res.status(400).json({ success: false, message: "ONLINE payment must be VERIFIED before accepting order." });
-        }
-        update.status = "ACCEPTED";
-        break;
-
-      case "COMPLETE_ORDER":
-        if (order.paymentMethod === 'ONLINE' && order.paymentStatus !== 'VERIFIED') {
-          return res.status(400).json({ success: false, message: "ONLINE payment must be VERIFIED before completing order." });
-        }
-        update.status = "COMPLETED";
-        if (order.paymentStatus !== 'VERIFIED') {
-          update.paymentDueStatus = "DUE";
-        }
+        ledgerMode = order.refund.method === 'COUNTER' ? 'COUNTER' : 'ONLINE';
+        addHistory();
         break;
 
       default:
         return res.status(400).json({ success: false, message: "Invalid action type." });
     }
 
-    // Step 2: Transaction for Ledger (if needed)
-    if (ledgerType) {
-        try {
-            await ledgerService.recordTransaction({
-                order: order, // Uses OLD values for calculation if needed, but schema uses amount
-                type: ledgerType,
-                amount: ledgerAmount,
-                mode: update.collectedVia || order.collectedVia || order.paymentMethod,
-                status: ledgerStatus
-            });
-        } catch (ledgerError) {
-            console.error(`[OrderController] Ledger recording failed:`, ledgerError);
-        }
-    }
-
-    // Step 3: Perform Update
+    // Perform Update
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: update },
       { new: true }
     );
 
+    // Sync with Ledger if verified payment or refund occurs
+    if (ledgerType) {
+        ledgerService.recordTransaction({
+            order: updatedOrder,
+            type: ledgerType,
+            amount: ledgerAmount,
+            mode: ledgerMode,
+            status: ledgerStatus
+        }).catch(err => console.error('[OrderController] Ledger sync failed:', err));
+    }
+
+    // Force DailyLedger sync on major changes
+    const syncRelevantStates = ['COMPLETED', 'REJECTED', 'ACCEPTED'];
+    if (syncRelevantStates.includes(update.status) || ledgerType) {
+        ledgerService.syncDailyLedger(updatedOrder.restaurant, updatedOrder.createdAt)
+            .catch(err => console.error('[OrderController] DailyLedger sync failed:', err));
+    }
+
     const enrichedOrder = await getEnrichedOrder(updatedOrder);
 
     // Socket Emissions
     const io = req.app.get('io');
     if (io) {
-      const adminRoom = enrichedOrder.restaurant.toString();
-      const customerRoom = enrichedOrder.deviceId;
+      const room = enrichedOrder.restaurant.toString();
+      io.to(room).emit('orderUpdate', enrichedOrder);
+      if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT') io.to(room).emit('paymentVerified', enrichedOrder);
       
-      // Emit to admin
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      
-      // Specific admin notifications
-      if (action === 'CANCEL_ORDER') io.to(adminRoom).emit('orderCancelled', enrichedOrder);
-      if (action === 'REJECT_ORDER') io.to(adminRoom).emit('orderRejected', enrichedOrder);
-      if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT') io.to(adminRoom).emit('paymentVerified', enrichedOrder);
-      
-      // Emit to customer - use both names for compatibility during migration
-      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-      io.to(customerRoom).emit('orderUpdate', enrichedOrder);
-      
-      // For specific payment retry logic if needed
-      if (action === 'REQUEST_RETRY') io.to(customerRoom).emit('paymentRetry', enrichedOrder);
-    }
-
-    // Sync on major status changes or payments
-    const syncRelevantStatuses = ['COMPLETED', 'REJECTED', 'CANCELLED', 'ACCEPTED'];
-    if (syncRelevantStatuses.includes(update.status) || ledgerType === 'PAYMENT' || ledgerType === 'REFUND') {
-        ledgerService.syncDailyLedger(updatedOrder.restaurant, updatedOrder.createdAt)
-            .catch(err => console.error('[OrderController] Post-action ledger sync failed:', err));
+      // Notify Customer
+      io.to(enrichedOrder.deviceId).emit('orderStatusUpdate', enrichedOrder);
+      if (action === 'REQUEST_RETRY') io.to(enrichedOrder.deviceId).emit('paymentRetry', enrichedOrder);
     }
 
     return res.json({ success: true, data: enrichedOrder });

@@ -4,7 +4,7 @@ const Order = require('../models/Order');
 const DailyLedger = require('../models/DailyLedger');
 const LedgerTransaction = require('../models/LedgerTransaction');
 const MenuItem = require('../models/MenuItem');
-const xlsx = require('xlsx');
+const ExcelJS = require('exceljs');
 const { hashToken } = require('../utils/token');
 const emailService = require('../services/email.service');
 const { registerOtpTemplate, resetPasswordOtpTemplate, deleteAccountOtpTemplate } = require('../templates/otpTemplates');
@@ -838,38 +838,7 @@ exports.deleteAccount = async (req, res, next) => {
       };
     }
 
-    // Generate full detailed report
-    const fullReportBuffer = await ReportService.generateReport(
-      user,
-      transactions,
-      orders,
-      {
-        dateRange,
-        reportType: 'Full Export',
-        includeOnlyVerified: false // Include all transactions for full export
-      }
-    );
-
-    // Create additional Menu Items sheet as separate buffer for attachment
-    const xlsx = require('xlsx');
-    const menuItemsWb = xlsx.utils.book_new();
-    if (menuItems.length > 0) {
-      const menuData = menuItems.map(item => ({
-        'Name': item.name,
-        'Description': item.description,
-        'Category': item.category,
-        'Food Type': item.foodType,
-        'Price': item.price,
-        'Offer Price': item.offerPrice || '-',
-        'Is Active': item.isActive ? 'Yes' : 'No',
-        'Created At': item.createdAt ? new Date(item.createdAt).toISOString() : '-'
-      }));
-      const menuWs = xlsx.utils.json_to_sheet(menuData);
-      xlsx.utils.book_append_sheet(menuItemsWb, menuWs, 'Menu Items');
-    }
-    const menuItemsBuffer = xlsx.write(menuItemsWb, { type: 'buffer', bookType: 'xlsx' });
-
-    // Send unified report via helper
+    // Send unified report via helper (which now handles Menu Items automatically)
     const { sendDetailedReportEmail } = require('../utils/reportHelper');
     const oldestTx = transactions[0];
     const reportDateRange = {
@@ -878,19 +847,14 @@ exports.deleteAccount = async (req, res, next) => {
       fromDate: oldestTx ? oldestTx.transactionDate : new Date('2000-01-01'),
       toDate: new Date()
     };
-
+    
     await sendDetailedReportEmail({
       restaurant: user,
       emailType: 'DELETION',
       dateRange: reportDateRange,
+      menuItems: menuItems, // Now handled universally by ReportService
       subject: 'DigitalMenu - Your Complete Data Export (Account Deletion)',
-      customSummary: { totalMenuItems: menuItems.length },
-      additionalAttachments: [
-        {
-          filename: `digitalmenu-menu-items-${moment().tz('Asia/Kolkata').format('YYYY-MM-DD_HH-mm')}.xlsx`,
-          content: menuItemsBuffer
-        }
-      ]
+      customSummary: { totalMenuItems: menuItems.length }
     });
 
     // Delete all user data

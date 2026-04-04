@@ -110,7 +110,7 @@ const orderSchema = new mongoose.Schema({
     enum: ['PLACED', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'COMPLETED'],
     default: 'PLACED',
     index: true,
-    set: v => v ? v.toUpperCase() : v // Support legacy/lowercase inputs
+    set: v => v ? v.toUpperCase() : v
   },
 
   paymentMethod: {
@@ -118,7 +118,7 @@ const orderSchema = new mongoose.Schema({
     enum: ['ONLINE', 'COUNTER'],
     required: true,
     index: true,
-    set: v => (v === 'cash') ? 'COUNTER' : (v === 'online') ? 'ONLINE' : v?.toUpperCase()
+    set: v => (v === 'cash' || v === 'COUNTER') ? 'COUNTER' : (v === 'online' || v === 'ONLINE') ? 'ONLINE' : v?.toUpperCase()
   },
 
   paymentStatus: {
@@ -133,7 +133,8 @@ const orderSchema = new mongoose.Schema({
     type: String,
     enum: ['CASH', 'ONLINE', 'NOT_COLLECTED'],
     default: 'NOT_COLLECTED',
-    index: true
+    index: true,
+    set: v => v === 'CASH' ? 'CASH' : v === 'ONLINE' ? 'ONLINE' : 'NOT_COLLECTED'
   },
 
   paymentDueStatus: {
@@ -147,7 +148,11 @@ const orderSchema = new mongoose.Schema({
     type: String,
     maxlength: 6,
     trim: true,
-    default: ''
+    default: '',
+    validate: {
+      validator: function(v) { return !v || v.length <= 6; },
+      message: 'UTR must be max 6 characters'
+    }
   },
 
   retryCount: {
@@ -162,7 +167,11 @@ const orderSchema = new mongoose.Schema({
   },
 
   statusHistory: [{
+    action: String,
     status: String,
+    paymentStatus: String,
+    reason: String,
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'RestaurantAdmin' },
     updatedAt: { type: Date, default: Date.now }
   }],
 
@@ -176,7 +185,7 @@ const orderSchema = new mongoose.Schema({
     amount: Number,
     method: {
       type: String,
-      enum: ['CASH', 'ONLINE']
+      enum: ['COUNTER', 'ONLINE']
     },
     processedAt: Date
   },

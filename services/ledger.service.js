@@ -30,6 +30,10 @@ exports.normalizeToISTMidnight = (date) => {
  */
 exports.recordTransaction = async ({ order, type, amount, mode, status = 'PENDING' }) => {
   try {
+    // HARDENING: Only allow 'VERIFIED' or 'PENDING' in LedgerTransaction.
+    // If we get 'UNPAID', 'RETRY', or anything else, fallback to 'PENDING'.
+    const normalizedStatus = status === 'VERIFIED' ? 'VERIFIED' : 'PENDING';
+    
     const transactionDate = exports.normalizeToISTMidnight(order.createdAt);
 
     // IDEMPOTENCY GUARD: Prevent duplicate REFUND transactions for the same order.
@@ -62,7 +66,7 @@ exports.recordTransaction = async ({ order, type, amount, mode, status = 'PENDIN
       orderId: order._id,
       type,
       paymentMode: mode.toUpperCase(),
-      status,
+      status: normalizedStatus,
       amount,
       netBalance: newOverallBalance,
       monthlyNetBalance: newMonthlyBalance,
@@ -130,7 +134,7 @@ exports.syncDailyLedger = async (restaurantId, date) => {
               type: 'PAYMENT',
               amount: o.totalAmount,
               mode: mode,
-              status: o.paymentStatus || 'PENDING'
+              status: o.paymentStatus // Now safely normalized by recordTransaction
           });
       }
     }
