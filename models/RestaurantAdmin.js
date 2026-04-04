@@ -140,7 +140,6 @@ const restaurantAdminSchema = new mongoose.Schema({
 });
 
 // Index for efficient lookups
-restaurantAdminSchema.index({ shortId: 1 });
 restaurantAdminSchema.index({ 'refreshTokens.deviceId': 1 });
 restaurantAdminSchema.index({ 'refreshTokens.tokenHash': 1 });
 
