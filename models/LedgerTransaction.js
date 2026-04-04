@@ -22,7 +22,7 @@ const ledgerTransactionSchema = new mongoose.Schema({
 
   paymentMode: {
     type: String,
-    enum: ['CASH', 'ONLINE'],
+    enum: ['COUNTER', 'ONLINE', 'CASH'], // Support both for safety during transition
     required: true
   },
 

@@ -15,7 +15,7 @@ const dailyLedgerSchema = new mongoose.Schema({
   },
 
   // Financial Summary (Truth from LedgerTransactions)
-  cash: {
+  counter: {
     received: { type: Number, default: 0 },
     verified: { type: Number, default: 0 },
     pending: { type: Number, default: 0 },

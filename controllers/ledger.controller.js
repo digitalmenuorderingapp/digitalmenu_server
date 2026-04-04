@@ -119,12 +119,8 @@ exports.getMonthlyLedger = async (req, res, next) => {
 // Re-sync (Recalculate) daily ledger from scratch
 exports.recalculateLedger = async (req, res, next) => {
   try {
-    const { date } = req.body;
+    const { date = new Date() } = req.body;
     const restaurantId = req.userId;
-
-    if (!date) {
-      return res.status(400).json({ success: false, message: 'Date is required' });
-    }
 
     const ledger = await ledgerService.syncDailyLedger(restaurantId, date);
 
@@ -138,11 +134,11 @@ exports.recalculateLedger = async (req, res, next) => {
   }
 };
 
-// Send Monthly Ledger Report via Email (Detailed Transactions) - Non-blocking
-exports.sendReportEmail = async (req, res, next) => {
+// Export detailed monthly report to mail (Manual Trigger)
+exports.exportReportToMail = async (req, res, next) => {
   try {
-    const restaurantId = req.userId;
-    const user = await RestaurantAdmin.findById(restaurantId).lean();
+    const userId = req.userId;
+    const user = await RestaurantAdmin.findById(userId).lean();
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'Restaurant not found' });
@@ -151,107 +147,33 @@ exports.sendReportEmail = async (req, res, next) => {
     // Return response immediately, process email in background
     res.json({
       success: true,
-      message: `Report is being prepared and will be sent to ${user.email} shortly`
+      message: `Detailed report is being prepared and will be sent to ${user.email} shortly.`
     });
 
-    // Process email asynchronously (fire-and-forget)
+    // Process in background
     (async () => {
       try {
-        const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const endOfRange = now;
-
-        // Fetch transactions with pagination for large datasets
-        const transactions = await LedgerTransaction.find({
-          restaurant: restaurantId,
-          transactionDate: { $gte: startOfMonth, $lte: endOfRange }
-        })
-        .sort({ transactionDate: 1 })
-        .lean();
-
-        // Prepare Excel Data
-        const columns = [
-          { header: 'Date' },
-          { header: 'Time' },
-          { header: 'Order No' },
-          { header: 'Table' },
-          { header: 'Type' },
-          { header: 'Mode' },
-          { header: 'Status' },
-          { header: 'Amount (Tax Incl)' },
-          { header: 'Monthly Net Balance' }
-        ];
-
-        const rows = transactions.map(t => {
-          const dateObj = new Date(t.transactionDate);
-          return [
-            dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-            dateObj.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
-            t.meta?.orderNumber || 'N/A',
-            t.meta?.tableNumber || '-',
-            t.type,
-            t.paymentMode,
-            t.status,
-            `₹${Math.abs(t.amount).toFixed(2)}`,
-            `₹${(t.monthlyNetBalance || 0).toFixed(2)}`
-          ];
-        });
-
-        const periodStr = `${startOfMonth.toLocaleDateString('en-IN')} - ${endOfRange.toLocaleDateString('en-IN')}`;
-
-        const excelBuffer = await excelHelper.createStyledWorkbook({
-          sheetName: 'Transaction Journal',
-          reportTitle: 'Monthly Audit Journal',
-          restaurantName: user.restaurantName || 'Your Restaurant',
-          period: periodStr,
-          columns,
-          rows
-        });
-
-        // Calculate Summary Stats
-        const verifiedPayments = transactions
-          .filter(t => t.type === 'PAYMENT' && t.status === 'VERIFIED')
-          .reduce((sum, t) => sum + t.amount, 0);
-
-        const pendingPayments = transactions
-          .filter(t => t.type === 'PAYMENT' && t.status === 'PENDING')
-          .reduce((sum, t) => sum + t.amount, 0);
-
-        const totalRefunds = transactions
-          .filter(t => t.type === 'REFUND')
-          .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-
-        const netBalance = verifiedPayments - totalRefunds;
-
-        const summary = {
-          'Net Balance (Verified)': `₹${netBalance.toFixed(2)}`,
-          'Total Verified Income': `₹${verifiedPayments.toFixed(2)}`,
-          'Total Processed Refunds': `₹${totalRefunds.toFixed(2)}`,
-          'Total Pending Collection': `₹${pendingPayments.toFixed(2)}`,
-          'Total Transactions': transactions.length
+        const moment = require('moment-timezone');
+        const { sendDetailedReportEmail } = require('../utils/reportHelper');
+        
+        const now = moment().tz('Asia/Kolkata');
+        const dateRange = {
+          from: now.clone().startOf('month').format('YYYY-MM-DD'),
+          to: now.format('YYYY-MM-DD'),
+          fromDate: now.clone().startOf('month').toDate(),
+          toDate: now.toDate()
         };
 
-        const html = reportEmailTemplate({
-          restaurantName: user.restaurantName || 'Partner',
-          reportType: 'Detailed Financial Ledger',
-          period: periodStr,
-          summary
+        await sendDetailedReportEmail({
+          restaurant: user,
+          emailType: 'MONTHLY',
+          dateRange,
+          subject: `${user.restaurantName} - Detailed Monthly Report - ${now.format('MMMM YYYY')}`
         });
 
-        await emailService.sendEmailWithAttachments(
-          user.email,
-          `Monthly Audit Journal - ${user.restaurantName}`,
-          `Your Monthly Audit Journal for ${periodStr} is attached.`,
-          [{
-            filename: `Audit_Journal_${now.getFullYear()}_${now.getMonth() + 1}.xlsx`,
-            content: excelBuffer
-          }],
-          html
-        );
-
-        console.log(`[Ledger] Report email sent successfully to ${user.email}`);
-      } catch (error) {
-        console.error('[Ledger] Failed to send report email:', error);
+        console.log(`[ManualExport] Detailed report sent to ${user.email}`);
+      } catch (bgError) {
+        console.error('[ManualExport] Background export failed:', bgError);
       }
     })();
 

@@ -2,50 +2,57 @@ const RestaurantAdmin = require('../models/RestaurantAdmin');
 const DailyLedger = require('../models/DailyLedger');
 const Order = require('../models/Order');
 const LedgerTransaction = require('../models/LedgerTransaction');
-const excelService = require('../services/excel.service');
+const ReportService = require('../services/report.service');
 const emailService = require('../services/email.service');
-const { monthlyReportTemplate } = require('../templates/monthlyReportTemplate');
+const moment = require('moment-timezone');
 
 /**
  * Core logic for processing end-of-month reports and data purging.
- * Updated for Final Clean Architecture (DailyLedger + LedgerTransaction).
+ * Updated to use new detailed report format with merged Order + LedgerTransaction data.
  */
 const processEndOfMonth = async () => {
   try {
     const restaurants = await RestaurantAdmin.find({});
-    const now = new Date();
+    const now = moment().tz('Asia/Kolkata');
     
     // Calculate last month details
-    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const monthName = lastMonth.toLocaleString('default', { month: 'long' });
-    const year = lastMonth.getFullYear();
+    const lastMonth = now.clone().subtract(1, 'month');
+    const monthName = lastMonth.format('MMMM');
+    const year = lastMonth.year();
 
-    const monthStart = new Date(year, lastMonth.getMonth(), 1);
-    const monthEnd = new Date(year, lastMonth.getMonth() + 1, 0, 23, 59, 59, 999);
-    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthStart = lastMonth.clone().startOf('month').toDate();
+    const monthEnd = lastMonth.clone().endOf('month').toDate();
+    const currentMonthStart = now.clone().startOf('month').toDate();
 
     console.log(`Starting month-end processing for ${monthName} ${year}...`);
 
     for (const restaurant of restaurants) {
       try {
-        // 1. Fetch last month's data (Summaries and full audit transactions)
-        const [dailyLedgers, transactions] = await Promise.all([
-          DailyLedger.find({
-            restaurant: restaurant._id,
-            date: { $gte: monthStart, $lte: monthEnd }
-          }).sort({ date: 1 }),
-          LedgerTransaction.find({
-            restaurant: restaurant._id,
-            transactionDate: { $gte: monthStart, $lte: monthEnd }
-          }).sort({ createdAt: 1 })
-        ]);
+        // 1. Fetch last month's data (LedgerTransactions and Orders)
+        const transactions = await LedgerTransaction.find({
+          restaurant: restaurant._id,
+          transactionDate: { $gte: monthStart, $lte: monthEnd }
+        }).sort({ transactionDate: 1 }).lean();
 
-        if (dailyLedgers.length === 0 && transactions.length === 0) {
+        if (transactions.length === 0) {
           console.log(`Skipping restaurant ${restaurant.restaurantName}: No data for ${monthName}`);
           continue;
         }
 
-        // 2. Aggregate monthly summary from DailyLedger records
+        // Get unique order IDs from transactions
+        const orderIds = [...new Set(transactions.map(t => t.orderId?.toString()).filter(Boolean))];
+
+        // Fetch all related orders
+        const orders = await Order.find({
+          _id: { $in: orderIds }
+        }).lean();
+
+        // Aggregate summary from DailyLedger for email template
+        const dailyLedgers = await DailyLedger.find({
+          restaurant: restaurant._id,
+          date: { $gte: monthStart, $lte: monthEnd }
+        }).sort({ date: 1 });
+
         const summary = dailyLedgers.reduce((acc, curr) => {
           acc.totalOrders += curr.counts.totalOrders || 0;
           acc.servedOrders += curr.counts.servedOrders || 0;
@@ -65,39 +72,27 @@ const processEndOfMonth = async () => {
           totalRefunds: 0
         });
 
-        // 3. Generate Excel Reports
-        // Note: excelService might need update if it specifically expects legacy ledger format, 
-        // but transactional reports (Audit Journal) are better.
-        const [ledgerBuffer, transBuffer] = await Promise.all([
-          excelService.generateLedgerReport(dailyLedgers, summary, monthName, year),
-          excelService.generateOrdersReport(transactions, monthName, year) // Using transactions as audit
-        ]);
+        // 2. Send email using the unified reportHelper
+        const { sendDetailedReportEmail } = require('../utils/reportHelper');
+        const dateRange = {
+          from: moment(monthStart).tz('Asia/Kolkata').format('YYYY-MM-DD'),
+          to: moment(monthEnd).tz('Asia/Kolkata').format('YYYY-MM-DD'),
+          fromDate: monthStart,
+          toDate: monthEnd
+        };
 
-        // 4. Send Email with Attachments
-        const ledgerFilename = `summary_${monthName}-${year}.xlsx`;
-        const transFilename = `audit_audit_${monthName}-${year}.xlsx`;
-        const subject = `${restaurant.restaurantName || 'Restaurant'} - Monthly Reports - ${monthName} ${year}`;
+        const subject = `${restaurant.restaurantName || 'Restaurant'} - Monthly Detailed Report - ${monthName} ${year}`;
         
-        const html = monthlyReportTemplate({
-          restaurantName: restaurant.restaurantName,
-          ownerName: restaurant.ownerName,
-          monthName,
-          year,
-          summary
+        await sendDetailedReportEmail({
+          restaurant,
+          emailType: 'MONTHLY',
+          dateRange,
+          subject
         });
 
-        await emailService.sendEmailWithAttachments(
-          restaurant.email,
-          subject,
-          '', 
-          [
-            { filename: ledgerFilename, content: ledgerBuffer },
-            { filename: transFilename, content: transBuffer }
-          ],
-          html
-        );
+        console.log(`Monthly report sent to: ${restaurant.restaurantName} (${restaurant.email})`);
 
-        // 5. Purge old data (Keep only current month and onwards for high-speed operation)
+        // 4. Purge old data (Keep only current month and onwards for high-speed operation)
         await Promise.all([
           DailyLedger.deleteMany({
             restaurant: restaurant._id,

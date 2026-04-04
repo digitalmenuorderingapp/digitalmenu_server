@@ -22,7 +22,6 @@ router.put('/:id/cancel', orderController.cancelOrder);
 router.use(protect, trackUserActivity);
 
 // Report & Analytics
-router.post('/report/email', orderController.sendReportEmail);
 router.get('/', orderController.getAllOrders);
 router.get('/table/:tableNumber', orderController.getOrdersByTable);
 router.get('/:id', orderController.getOrderById);

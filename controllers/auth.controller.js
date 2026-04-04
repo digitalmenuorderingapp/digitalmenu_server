@@ -8,6 +8,7 @@ const xlsx = require('xlsx');
 const { hashToken } = require('../utils/token');
 const emailService = require('../services/email.service');
 const { registerOtpTemplate, resetPasswordOtpTemplate, deleteAccountOtpTemplate } = require('../templates/otpTemplates');
+const { detailedReportEmailTemplate, accountDeletionExportTemplate } = require('../templates/detailedReportEmail');
 const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require('../utils/cloudinary');
 const { logActivity } = require('../utils/auditLogger');
 
@@ -33,15 +34,15 @@ const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER
 // Cookie options
 const cookieOptions = {
   httpOnly: true,
-  secure: true, // Force secure for production-ready cross-site support
-  sameSite: 'none', // Required for cross-site (Vercel -> Render)
+  secure: isProduction, // Only force secure in production
+  sameSite: isProduction ? 'none' : 'lax', // 'none' requires HTTPS, 'lax' is better for local dev
   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 };
 
 const accessCookieOptions = {
   httpOnly: true,
-  secure: true,
-  sameSite: 'none',
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   maxAge: 15 * 60 * 1000 // 15 minutes
 };
 
@@ -770,64 +771,88 @@ exports.deleteAccount = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
     }
 
-    // Fetch all user data
-    const orders = await Order.find({ restaurant: userId }).sort({ createdAt: -1 });
-    const dailyLedgers = await DailyLedger.find({ restaurant: userId }).sort({ date: -1 });
-    const transactions = await LedgerTransaction.find({ restaurant: userId }).sort({ createdAt: -1 });
-    const menuItems = await MenuItem.find({ restaurant: userId });
+    // Import ReportService for full export
+    const ReportService = require('../services/report.service');
+    const moment = require('moment-timezone');
 
-    // Create Excel workbook
-    const wb = xlsx.utils.book_new();
+    // Fetch all user data for full export
+    const transactions = await LedgerTransaction.find({ restaurant: userId })
+      .sort({ transactionDate: 1 })
+      .lean();
 
-    // Orders sheet
-    if (orders.length > 0) {
-      const ordersData = orders.map(order => ({
-        'Order Number': order.orderNumber,
-        'Customer Name': order.customerName,
-        'Table Number': order.tableNumber,
-        'Items': order.items.map(i => `${i.quantity}x ${i.name}`).join(', '),
-        'Total Amount': order.totalAmount,
-        'Payment Method': order.paymentMethod,
-        'Payment Status': order.paymentStatus,
-        'Status': order.status,
-        'Created At': order.createdAt.toISOString()
-      }));
-      const ordersWs = xlsx.utils.json_to_sheet(ordersData);
-      xlsx.utils.book_append_sheet(wb, ordersWs, 'Orders');
+    // Get unique order IDs from transactions
+    const orderIds = [...new Set(transactions.map(t => t.orderId?.toString()).filter(Boolean))];
+
+    // Fetch all related orders
+    const orders = await Order.find({
+      _id: { $in: orderIds }
+    }).lean();
+
+    // Get menu items for additional sheet and image deletion
+    const menuItems = await MenuItem.find({ restaurant: userId }).lean();
+
+    // Delete menu item images from Cloudinary
+    const { deleteFromCloudinary, extractPublicId } = require('../utils/cloudinary');
+    const imageDeletePromises = menuItems
+      .filter(item => item.image && item.image.includes('cloudinary.com'))
+      .map(async (item) => {
+        try {
+          const publicId = extractPublicId(item.image);
+          if (publicId) {
+            await deleteFromCloudinary(publicId);
+            console.log(`[DeleteAccount] Deleted Cloudinary image: ${publicId}`);
+          }
+        } catch (imgError) {
+          console.error(`[DeleteAccount] Failed to delete image for item ${item._id}:`, imgError.message);
+          // Continue with deletion even if image deletion fails
+        }
+      });
+    // Delete restaurant logo from Cloudinary if exists
+    if (user.logo && user.logo.includes('cloudinary.com')) {
+      try {
+        const logoPublicId = extractPublicId(user.logo);
+        if (logoPublicId) {
+          await deleteFromCloudinary(logoPublicId);
+          console.log(`[DeleteAccount] Deleted Restaurant Logo: ${logoPublicId}`);
+        }
+      } catch (logoError) {
+        console.error(`[DeleteAccount] Failed to delete restaurant logo:`, logoError.message);
+      }
     }
 
-    // Ledger Summary sheet
-    if (dailyLedgers.length > 0) {
-      const ledgersData = dailyLedgers.map(ledger => ({
-        'Date': ledger.date.toISOString().split('T')[0],
-        'Total Orders': ledger.counts.totalOrders,
-        'Served Orders': ledger.counts.servedOrders,
-        'Cash Received': ledger.cash.received,
-        'Cash Verified': ledger.cash.verified,
-        'Online Received': ledger.online.received,
-        'Online Verified': ledger.online.verified,
-        'Net Profit': ledger.total.netBalance
-      }));
-      const ledgerWs = xlsx.utils.json_to_sheet(ledgersData);
-      xlsx.utils.book_append_sheet(wb, ledgerWs, 'Daily Summaries');
-    }
+    await Promise.allSettled(imageDeletePromises);
 
-    // Transactions (Audit Journal) sheet
+    // Determine date range for the report
+    let dateRange;
     if (transactions.length > 0) {
-      const transData = transactions.map(tx => ({
-        'Date': tx.createdAt.toISOString(),
-        'Order #': tx.meta.orderNumber,
-        'Type': tx.type,
-        'Mode': tx.paymentMode,
-        'Status': tx.status,
-        'Amount': tx.amount,
-        'UTR': tx.meta.utr || ''
-      }));
-      const transWs = xlsx.utils.json_to_sheet(transData);
-      xlsx.utils.book_append_sheet(wb, transWs, 'Audit Journal');
+      const firstTx = transactions[0];
+      const lastTx = transactions[transactions.length - 1];
+      dateRange = {
+        from: moment(firstTx.transactionDate).tz('Asia/Kolkata').format('YYYY-MM-DD'),
+        to: moment(lastTx.transactionDate).tz('Asia/Kolkata').format('YYYY-MM-DD')
+      };
+    } else {
+      dateRange = {
+        from: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
+        to: moment().tz('Asia/Kolkata').format('YYYY-MM-DD')
+      };
     }
 
-    // Menu Items sheet
+    // Generate full detailed report
+    const fullReportBuffer = await ReportService.generateReport(
+      user,
+      transactions,
+      orders,
+      {
+        dateRange,
+        reportType: 'Full Export',
+        includeOnlyVerified: false // Include all transactions for full export
+      }
+    );
+
+    // Create additional Menu Items sheet as separate buffer for attachment
+    const xlsx = require('xlsx');
+    const menuItemsWb = xlsx.utils.book_new();
     if (menuItems.length > 0) {
       const menuData = menuItems.map(item => ({
         'Name': item.name,
@@ -835,30 +860,38 @@ exports.deleteAccount = async (req, res, next) => {
         'Category': item.category,
         'Food Type': item.foodType,
         'Price': item.price,
-        'Offer Price': item.offerPrice,
+        'Offer Price': item.offerPrice || '-',
         'Is Active': item.isActive ? 'Yes' : 'No',
-        'Created At': item.createdAt.toISOString()
+        'Created At': item.createdAt ? new Date(item.createdAt).toISOString() : '-'
       }));
       const menuWs = xlsx.utils.json_to_sheet(menuData);
-      xlsx.utils.book_append_sheet(wb, menuWs, 'Menu Items');
+      xlsx.utils.book_append_sheet(menuItemsWb, menuWs, 'Menu Items');
     }
+    const menuItemsBuffer = xlsx.write(menuItemsWb, { type: 'buffer', bookType: 'xlsx' });
 
-    // Generate Excel buffer
-    const excelBuffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    // Send unified report via helper
+    const { sendDetailedReportEmail } = require('../utils/reportHelper');
+    const oldestTx = transactions[0];
+    const reportDateRange = {
+      from: oldestTx ? moment(oldestTx.transactionDate).tz('Asia/Kolkata').format('YYYY-MM-DD') : moment().format('YYYY-MM-DD'),
+      to: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
+      fromDate: oldestTx ? oldestTx.transactionDate : new Date('2000-01-01'),
+      toDate: new Date()
+    };
 
-    // Send email with data export
-    await emailService.sendEmailWithAttachments(
-      user.email,
-      'DigitalMenu - Your Data Export (Account Deletion)',
-      'Your DigitalMenu account has been deleted. Attached is an Excel export of all your data including orders, audit journal, daily summaries, and menu items.',
-      [
+    await sendDetailedReportEmail({
+      restaurant: user,
+      emailType: 'DELETION',
+      dateRange: reportDateRange,
+      subject: 'DigitalMenu - Your Complete Data Export (Account Deletion)',
+      customSummary: { totalMenuItems: menuItems.length },
+      additionalAttachments: [
         {
-          filename: `digitalmenu-data-export-${user.email}-${new Date().toISOString().split('T')[0]}.xlsx`,
-          content: excelBuffer
+          filename: `digitalmenu-menu-items-${moment().tz('Asia/Kolkata').format('YYYY-MM-DD_HH-mm')}.xlsx`,
+          content: menuItemsBuffer
         }
-      ],
-      `<p>Your DigitalMenu account has been deleted.</p><p>Attached is an Excel export of all your data. This export contains your Order history, Audit Journal (Transactions), and Daily Summaries.</p><p>This export was generated on ${new Date().toLocaleString()}.</p>`
-    );
+      ]
+    });
 
     // Delete all user data
     await Promise.all([
@@ -875,7 +908,7 @@ exports.deleteAccount = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Your account has been deleted. A data export has been sent to your email.'
+      message: 'Your account has been deleted. A complete data export has been sent to your email.'
     });
   } catch (error) {
     next(error);

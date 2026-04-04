@@ -16,7 +16,7 @@ router.get('/monthly', ledgerController.getMonthlyLedger); // ?month=1-12&year=2
 router.get('/transactions', ledgerController.getTransactions); // ?date=YYYY-MM-DD
 
 // Management & Recalculation
-router.post('/report/email', ledgerController.sendReportEmail);
-router.post('/recalculate', ledgerController.recalculateLedger);
+// Report Export
+router.post('/exportreporttomail', ledgerController.exportReportToMail);
 
 module.exports = router;

@@ -5,9 +5,24 @@ const Order = require('../models/Order');
 // Normalize to IST 00:00 (18:30 UTC previous day)
 exports.normalizeToISTMidnight = (date) => {
   const d = new Date(date);
-  const istStr = d.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
-  const [m, d1, y] = istStr.split('/');
-  return new Date(`${y}-${m.padStart(2, '0')}-${d1.padStart(2, '0')}T00:00:00+05:30`);
+  
+  // Create a formatter for IST date components
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+
+  const parts = formatter.formatToParts(d);
+  const getPart = (type) => parts.find(p => p.type === type).value;
+  
+  const y = getPart('year');
+  const m = getPart('month');
+  const d1 = getPart('day');
+  
+  // Return at 00:00:00 IST
+  return new Date(`${y}-${m}-${d1}T00:00:00+05:30`);
 };
 
 /**
@@ -79,18 +94,26 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     const startOfDay = targetDate;
     const endOfDay = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000 - 1);
 
+    // Ensure restaurantId is an ObjectId if it happens to be a string
+    const mongoose = require('mongoose');
+    const rId = typeof restaurantId === 'string' ? new mongoose.Types.ObjectId(restaurantId) : restaurantId;
+
     // 1. Independent count of all order states
     const allOrders = await Order.find({
-      restaurant: restaurantId,
+      restaurant: rId,
       createdAt: { $gte: startOfDay, $lte: endOfDay }
     });
 
     // 2. Fetch all successful orders for analytics (Items & Hours)
     const orders = await Order.find({
-      restaurant: restaurantId,
+      restaurant: rId,
       createdAt: { $gte: startOfDay, $lte: endOfDay },
       status: { $nin: ['REJECTED', 'CANCELLED'] }
     });
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[LedgerSync] ${targetDate.toISOString()} - Found ${allOrders.length} total orders, ${orders.length} active orders.`);
+    }
 
 
     // 3. Self-healing: Ensure all orders have a PAYMENT transaction for this date
@@ -99,11 +122,14 @@ exports.syncDailyLedger = async (restaurantId, date) => {
       const hasTx = await LedgerTransaction.exists({ orderId: o._id, type: 'PAYMENT' });
       if (!hasTx) {
           console.log(`[LedgerService] Healing missing transaction for order: ${o._id}`);
+          let mode = o.paymentMethod || 'COUNTER';
+          if (mode === 'CASH') mode = 'COUNTER';
+
           await exports.recordTransaction({
               order: o,
               type: 'PAYMENT',
               amount: o.totalAmount,
-              mode: o.paymentMethod,
+              mode: mode,
               status: o.paymentStatus || 'PENDING'
           });
       }
@@ -119,7 +145,7 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     const ledger = await DailyLedger.getOrCreateLedger(targetDate, restaurantId);
     
     // RESET FINANCIALS
-    ledger.cash = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
+    ledger.counter = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
     ledger.online = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
     ledger.total = { received: 0, refunded: 0, netBalance: 0 };
     ledger.counts = { totalOrders: 0, servedOrders: 0, rejectedOrders: 0, cancelledOrders: 0 };
@@ -132,7 +158,7 @@ exports.syncDailyLedger = async (restaurantId, date) => {
 
     // PROCESS TRANSACTIONS (Financial Truth)
     transactions.forEach(tx => {
-      const mode = tx.paymentMode === 'CASH' ? 'cash' : 'online';
+      const mode = (tx.paymentMode === 'CASH' || tx.paymentMode === 'COUNTER') ? 'counter' : 'online';
       
       if (tx.type === 'PAYMENT') {
         ledger[mode].received += tx.amount;
@@ -142,12 +168,12 @@ exports.syncDailyLedger = async (restaurantId, date) => {
         ledger[mode].refunded += Math.abs(tx.amount);
       }
     });
-
+    
     // FINALIZING BALANCES
-    ledger.cash.balance = ledger.cash.verified - ledger.cash.refunded; // Profit is only from verified cash
+    ledger.counter.balance = ledger.counter.verified - ledger.counter.refunded; 
     ledger.online.balance = ledger.online.verified - ledger.online.refunded;
-    ledger.total.received = ledger.cash.verified + ledger.online.verified; // Net received = verified only
-    ledger.total.refunded = ledger.cash.refunded + ledger.online.refunded;
+    ledger.total.received = ledger.counter.verified + ledger.online.verified; 
+    ledger.total.refunded = ledger.counter.refunded + ledger.online.refunded;
     ledger.total.netBalance = ledger.total.received - ledger.total.refunded;
 
     // PROCESS COUNTS (Operational Truth)

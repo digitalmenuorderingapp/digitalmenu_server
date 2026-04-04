@@ -274,9 +274,11 @@ exports.handleOrderAction = async (req, res, next) => {
       if (action === 'REQUEST_RETRY') io.to(customerRoom).emit('paymentRetry', enrichedOrder);
     }
 
-    // Sync on completion
-    if (update.status === 'COMPLETED' || ledgerType === 'PAYMENT') {
-        ledgerService.syncDailyLedger(updatedOrder.restaurant, updatedOrder.createdAt).catch(() => {});
+    // Sync on major status changes or payments
+    const syncRelevantStatuses = ['COMPLETED', 'REJECTED', 'CANCELLED', 'ACCEPTED'];
+    if (syncRelevantStatuses.includes(update.status) || ledgerType === 'PAYMENT' || ledgerType === 'REFUND') {
+        ledgerService.syncDailyLedger(updatedOrder.restaurant, updatedOrder.createdAt)
+            .catch(err => console.error('[OrderController] Post-action ledger sync failed:', err));
     }
 
     return res.json({ success: true, data: enrichedOrder });
@@ -1262,93 +1264,3 @@ exports.processRefund = async (req, res, next) => {
   }
 };
 
-// Send Monthly Orders Report via Email
-exports.sendReportEmail = async (req, res, next) => {
-  try {
-    const restaurantId = req.userId;
-    const user = await RestaurantAdmin.findById(restaurantId);
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Restaurant not found' });
-    }
-
-    // Define Date Range: Month Start to Now
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfRange = now;
-
-    const orders = await Order.find({
-      restaurant: restaurantId,
-      createdAt: { $gte: startOfMonth, $lte: endOfRange }
-    }).sort({ createdAt: 1 });
-
-    // Prepare Excel Data
-    const columns = [
-      { header: 'Order No' },
-      { header: 'Date' },
-      { header: 'Time' },
-      { header: 'Customer' },
-      { header: 'Table' },
-      { header: 'Method' },
-      { header: 'Status' },
-      { header: 'Amount' },
-      { header: 'Items' }
-    ];
-
-    const rows = orders.map(o => [
-      o.orderNumber || 'N/A',
-      new Date(o.createdAt).toLocaleDateString('en-IN'),
-      new Date(o.createdAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-      o.customerName,
-      o.tableNumber,
-      o.paymentMethod.toUpperCase(),
-      o.status.toUpperCase(),
-      o.totalAmount,
-      o.items.map(i => `${i.name} (x${i.quantity})`).join(', ')
-    ]);
-
-    const periodStr = `${startOfMonth.toLocaleDateString('en-IN')} - ${endOfRange.toLocaleDateString('en-IN')}`;
-
-    const excelBuffer = await excelHelper.createStyledWorkbook({
-      sheetName: 'Orders History',
-      reportTitle: 'Monthly Orders Analysis',
-      restaurantName: user.restaurantName || 'Your Restaurant',
-      period: periodStr,
-      columns,
-      rows
-    });
-
-    // Prepare Email Content
-    const summary = {
-      'Total Orders': orders.length,
-      'Total Revenue': `₹${orders.filter(o => o.status === 'COMPLETED').reduce((sum, o) => sum + o.totalAmount, 0).toFixed(2)}`,
-      'Completed Orders': orders.filter(o => o.status === 'COMPLETED').length,
-      'Cancelled/Rejected': orders.filter(o => ['CANCELLED', 'REJECTED'].includes(o.status)).length
-    };
-
-    const html = reportEmailTemplate({
-      restaurantName: user.restaurantName || 'Partner',
-      reportType: 'Orders History',
-      period: periodStr,
-      summary
-    });
-
-    await emailService.sendEmailWithAttachments(
-      user.email,
-      `Monthly Orders Report - ${user.restaurantName}`,
-      `Your Monthly Orders Report for ${periodStr} is attached.`,
-      [{
-        filename: `Orders_Report_${now.getFullYear()}_${now.getMonth() + 1}.xlsx`,
-        content: excelBuffer
-      }],
-      html
-    );
-
-    res.json({
-      success: true,
-      message: `Report successfully sent to ${user.email}`
-    });
-  } catch (error) {
-    next(error);
-  }
-};

@@ -90,7 +90,7 @@ exports.validateOrder = [
     .trim()
     .withMessage('Customer name is required'),
   body('customerPhone')
-    .optional()
+    .optional({ checkFalsy: true })
     .isMobilePhone('any')
     .withMessage('Please provide a valid phone number'),
   body('deviceId')
