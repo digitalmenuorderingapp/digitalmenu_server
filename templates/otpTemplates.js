@@ -101,3 +101,60 @@ exports.resetPasswordOtpTemplate = (otp) => {
 </body>
 </html>`;
 };
+
+exports.deleteAccountOtpTemplate = (otp) => {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Deletion Verification</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #fff1f2; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); overflow: hidden; border: 1px solid #ffe4e6; }
+    .top-bar { height: 4px; background: linear-gradient(90deg, #e11d48 0%, #fb7185 100%); }
+    .header { text-align: center; padding: 24px 16px 16px; }
+    .icon-box { width: 56px; height: 56px; background: #fff1f2; border-radius: 12px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+    .title { margin: 0; font-size: 22px; font-weight: 700; color: #9f1239; letter-spacing: -0.5px; }
+    .body-content { padding: 0 20px 24px; text-align: center; }
+    .message { font-size: 15px; line-height: 1.5; color: #881337; margin-bottom: 24px; }
+    .otp-box { background: #fff1f2; padding: 16px; border-radius: 8px; border: 1px dashed #fda4af; display: inline-block; margin-bottom: 24px; }
+    .otp-code { font-size: 32px; font-weight: 800; color: #be123c; letter-spacing: 6px; font-family: monospace; }
+    .warning-box { background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px; margin-bottom: 24px; text-align: left; }
+    .warning-text { font-size: 13px; color: #991b1b; margin: 0; font-weight: 600; }
+    .footer-text { font-size: 13px; color: #9f1239; opacity: 0.8; margin: 0; line-height: 1.4; }
+    .footer { background: #fffbff; text-align: center; padding: 20px; border-top: 1px solid #ffe4e6; }
+    .copyright { margin: 0; font-size: 13px; color: #be123c; }
+    @media only screen and (max-width: 600px) {
+      .container { margin: 10px; border-radius: 8px; border: none; }
+      .header { padding: 20px 12px 12px; }
+      .body-content { padding: 0 16px 20px; }
+      .title { font-size: 20px; }
+      .otp-code { font-size: 28px; letter-spacing: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="top-bar"></div>
+    <div class="header">
+      <div class="icon-box">⚠️</div>
+      <h1 class="title">Delete Account Verification</h1>
+    </div>
+    <div class="body-content">
+      <p class="message">We received a request to permanently delete your DigitalMenu account. This action is **irreversible**. Use the following code to confirm:</p>
+      <div class="otp-box">
+        <span class="otp-code">${otp}</span>
+      </div>
+      <div class="warning-box">
+        <p class="warning-text">Verification of this code will permanently remove your restaurant, menu items, and all order history. A final data export will be sent to your email upon confirmation.</p>
+      </div>
+      <p class="footer-text">This code is valid for 10 minutes.<br>If you didn't request this, please secure your account immediately.</p>
+    </div>
+    <div class="footer">
+      <p class="copyright">&copy; 2026 DigitalMenu. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+};

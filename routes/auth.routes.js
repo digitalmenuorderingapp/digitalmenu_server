@@ -28,5 +28,7 @@ router.put('/restaurant/logo', protect, trackUserActivity, upload.single('logo')
 router.delete('/restaurant/logo', protect, trackUserActivity, authController.removeLogo);
 
 // Delete account routes
+router.post('/delete-account-otp', protect, authController.sendDeleteAccountOtp);
+router.post('/delete-account', protect, authController.deleteAccount);
 
 module.exports = router;

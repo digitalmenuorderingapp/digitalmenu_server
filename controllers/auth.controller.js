@@ -1,8 +1,13 @@
 const jwt = require('jsonwebtoken');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
+const Order = require('../models/Order');
+const DailyLedger = require('../models/DailyLedger');
+const LedgerTransaction = require('../models/LedgerTransaction');
+const MenuItem = require('../models/MenuItem');
+const xlsx = require('xlsx');
 const { hashToken } = require('../utils/token');
 const emailService = require('../services/email.service');
-const { registerOtpTemplate, resetPasswordOtpTemplate } = require('../templates/otpTemplates');
+const { registerOtpTemplate, resetPasswordOtpTemplate, deleteAccountOtpTemplate } = require('../templates/otpTemplates');
 const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require('../utils/cloudinary');
 const { logActivity } = require('../utils/auditLogger');
 
@@ -716,7 +721,7 @@ exports.sendDeleteAccountOtp = async (req, res, next) => {
     const emailInfo = await emailService.sendEmail({
       to: user.email,
       subject: 'DigitalMenu - Account Deletion Verification',
-      html: resetPasswordOtpTemplate(otp)
+      html: deleteAccountOtpTemplate(otp)
     });
 
     if (!emailInfo || !emailInfo.messageId) {
@@ -749,13 +754,6 @@ exports.deleteAccount = async (req, res, next) => {
     if (user.deleteAccountOtp !== otp || user.deleteAccountOtpExpires < Date.now()) {
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
     }
-
-    // Export data to Excel
-    const xlsx = require('xlsx');
-    const Order = require('../models/Order');
-    const DailyLedger = require('../models/DailyLedger');
-    const LedgerTransaction = require('../models/LedgerTransaction');
-    const MenuItem = require('../models/MenuItem');
 
     // Fetch all user data
     const orders = await Order.find({ restaurant: userId }).sort({ createdAt: -1 });
