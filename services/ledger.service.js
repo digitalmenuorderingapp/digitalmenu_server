@@ -56,7 +56,7 @@ exports.recordTransaction = async ({ order, type, amount, mode, status = 'PENDIN
         orderNumber: order.orderNumber,
         tableNumber: order.tableNumber,
         deviceId: order.deviceId,
-        utr: order.utrNumber
+        utr: order.utr
       }
     });
 
@@ -89,7 +89,7 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     const orders = await Order.find({
       restaurant: restaurantId,
       createdAt: { $gte: startOfDay, $lte: endOfDay },
-      status: { $nin: ['rejected', 'cancelled'] }
+      status: { $nin: ['REJECTED', 'CANCELLED'] }
     });
 
 
@@ -153,9 +153,9 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     // PROCESS COUNTS (Operational Truth)
     allOrders.forEach(o => {
       ledger.counts.totalOrders++;
-      if (o.status === 'served') ledger.counts.servedOrders++;
-      else if (o.status === 'rejected') ledger.counts.rejectedOrders++;
-      else if (o.status === 'cancelled') ledger.counts.cancelledOrders++;
+      if (o.status === 'COMPLETED') ledger.counts.servedOrders++;
+      else if (o.status === 'REJECTED') ledger.counts.rejectedOrders++;
+      else if (o.status === 'CANCELLED') ledger.counts.cancelledOrders++;
     });
 
     // PROCESS ANALYTICS (Analytics Truth)
@@ -165,7 +165,7 @@ exports.syncDailyLedger = async (restaurantId, date) => {
       if (hourly) {
         hourly.orders++;
         hourly.revenue += o.totalAmount;
-        if (o.status === 'served') hourly.servedOrders++;
+        if (o.status === 'COMPLETED') hourly.servedOrders++;
       }
 
       o.items.forEach(item => {

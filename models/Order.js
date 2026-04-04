@@ -107,38 +107,76 @@ const orderSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['placed', 'preparing', 'served', 'rejected', 'cancelled'],
-    default: 'placed',
-    index: true
+    enum: ['PLACED', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'COMPLETED'],
+    default: 'PLACED',
+    index: true,
+    set: v => v ? v.toUpperCase() : v // Support legacy/lowercase inputs
   },
 
   paymentMethod: {
     type: String,
-    enum: ['cash', 'online'],
+    enum: ['ONLINE', 'COUNTER'],
     required: true,
-    index: true
+    index: true,
+    set: v => (v === 'cash') ? 'COUNTER' : (v === 'online') ? 'ONLINE' : v?.toUpperCase()
   },
 
   paymentStatus: {
     type: String,
-    enum: ['PENDING', 'VERIFIED'],
+    enum: ['PENDING', 'VERIFIED', 'RETRY', 'UNPAID'],
     default: 'PENDING',
+    index: true,
+    set: v => v ? v.toUpperCase() : v
+  },
+
+  collectedVia: {
+    type: String,
+    enum: ['CASH', 'ONLINE', 'NOT_COLLECTED'],
+    default: 'NOT_COLLECTED',
     index: true
   },
 
-  utrNumber: String,
+  paymentDueStatus: {
+    type: String,
+    enum: ['CLEAR', 'DUE'],
+    default: 'CLEAR',
+    index: true
+  },
+
+  utr: {
+    type: String,
+    maxlength: 6,
+    trim: true,
+    default: ''
+  },
+
+  retryCount: {
+    type: Number,
+    default: 0
+  },
+
+  collectedAt: Date,
+  collectedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'RestaurantAdmin'
+  },
+
+  statusHistory: [{
+    status: String,
+    updatedAt: { type: Date, default: Date.now }
+  }],
 
   refund: {
     status: {
       type: String,
-      enum: ['none', 'pending', 'refunded'],
-      default: 'none',
+      enum: ['NOT_REQUIRED', 'PENDING', 'COMPLETED'],
+      default: 'NOT_REQUIRED',
       index: true
     },
     amount: Number,
     method: {
       type: String,
-      enum: ['cash', 'online']
+      enum: ['CASH', 'ONLINE']
     },
     processedAt: Date
   },
@@ -199,7 +237,7 @@ const orderSchema = new mongoose.Schema({
 
 // Virtual for order duration
 orderSchema.virtual('orderDuration').get(function () {
-  if (this.status === 'served' && this.updatedAt) {
+  if (this.status === 'COMPLETED' && this.updatedAt) {
     return Math.floor((this.updatedAt - this.createdAt) / (1000 * 60)); // in minutes
   }
   return null;
@@ -237,8 +275,16 @@ orderSchema.pre('save', async function (next) {
     this.orderNumber = orderNumber;
   }
 
-  // Set refund processed date when refund is marked as refunded
-  if (this.isModified('refund.status') && this.refund.status === 'refunded' && !this.refund.processedAt) {
+  // Update status history when status changes
+  if (this.isModified('status')) {
+    this.statusHistory.push({
+      status: this.status,
+      updatedAt: new Date()
+    });
+  }
+
+  // Set refund processed date when refund is marked as COMPLETED
+  if (this.isModified('refund.status') && this.refund.status === 'COMPLETED' && !this.refund.processedAt) {
     this.refund.processedAt = new Date();
   }
 

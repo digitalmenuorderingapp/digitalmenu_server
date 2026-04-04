@@ -25,7 +25,7 @@ exports.createOrder = async (req, res, next) => {
       items, 
       totalAmount, 
       paymentMethod, 
-      utrNumber, 
+      utr, 
       restaurantId,
       orderType = 'dine-in',
       numberOfPersons,
@@ -42,12 +42,12 @@ exports.createOrder = async (req, res, next) => {
       sessionId,
       items,
       totalAmount,
-      paymentMethod: paymentMethod || 'cash',
-      utrNumber,
+      paymentMethod: paymentMethod || 'COUNTER',
+      utr: utr ? utr.substring(0, 6) : '',
       orderType,
       numberOfPersons: orderType === 'dine-in' ? numberOfPersons : undefined,
       specialInstructions,
-      status: 'placed'
+      status: 'PLACED'
     });
 
     // 2. Return response immediately (don't wait for async operations)
@@ -86,6 +86,206 @@ exports.createOrder = async (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------
+// CENTRALIZED ORDER ACTIONS (State Machine)
+// ---------------------------------------------------------
+exports.handleOrderAction = async (req, res, next) => {
+  try {
+    const { id: orderId } = req.params;
+    const { action, payload = {} } = req.body;
+    const adminId = req.userId; // Provided by protect middleware
+
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+    const update = {};
+    const now = new Date();
+    let emitEvent = 'orderUpdate'; 
+    let ledgerType = null;
+    let ledgerStatus = 'PENDING';
+    let ledgerAmount = 0;
+
+    switch (action) {
+
+      case "VERIFY_PAYMENT":
+        if (order.paymentMethod !== 'ONLINE') {
+          return res.status(400).json({ success: false, message: "Only ONLINE payments can be verified." });
+        }
+        update.paymentStatus = "VERIFIED";
+        update.collectedVia = "ONLINE";
+        update.paymentDueStatus = "CLEAR";
+        update.collectedAt = now;
+        update.collectedBy = adminId;
+        if (payload.utr) update.utr = payload.utr.slice(-6);
+        
+        ledgerType = 'PAYMENT';
+        ledgerStatus = 'VERIFIED';
+        ledgerAmount = order.totalAmount;
+        break;
+
+      case "REQUEST_RETRY":
+        if (order.paymentMethod !== 'ONLINE') {
+          return res.status(400).json({ success: false, message: "Only ONLINE payments can be marked for retry." });
+        }
+        update.paymentStatus = "RETRY";
+        update.retryCount = (order.retryCount || 0) + 1;
+        emitEvent = 'orderStatusUpdate'; // Standardize on status update
+        break;
+
+      case "MARK_UNPAID":
+        update.paymentStatus = "UNPAID";
+        if (["PLACED", "ACCEPTED"].includes(order.status)) {
+          update.status = "REJECTED";
+        }
+        if (order.status === "COMPLETED") {
+          update.paymentDueStatus = "DUE";
+        }
+        break;
+
+      case "COLLECT_PAYMENT":
+        update.paymentStatus = "VERIFIED";
+        update.collectedVia = payload.method; // CASH / ONLINE
+        update.paymentDueStatus = "CLEAR";
+        update.collectedAt = now;
+        update.collectedBy = adminId;
+        if (payload.method === "ONLINE" && payload.utr) {
+          update.utr = payload.utr.slice(-6);
+        }
+        
+        ledgerType = 'PAYMENT';
+        ledgerStatus = 'VERIFIED';
+        ledgerAmount = order.totalAmount;
+        break;
+
+      case "REJECT_ORDER":
+        if (order.status !== 'PLACED') {
+          return res.status(400).json({ success: false, message: "Can only reject orders in PLACED state." });
+        }
+        update.status = "REJECTED";
+        update.rejectionReason = payload.reason || "Order rejected by admin";
+        if (order.paymentStatus === "VERIFIED") {
+          update['refund.status'] = "PENDING";
+          update['refund.amount'] = order.totalAmount;
+          update['refund.method'] = (order.collectedVia === 'NOT_COLLECTED') ? order.paymentMethod : order.collectedVia;
+        } else {
+          update['refund.status'] = "NOT_REQUIRED";
+        }
+        break;
+
+      case "CANCEL_ORDER":
+        if (order.status !== 'PLACED') {
+          return res.status(400).json({ success: false, message: "Cannot cancel order once it is being prepared or completed." });
+        }
+        update.status = "CANCELLED";
+        update.cancellationReason = payload.reason || "Order cancelled.";
+        if (order.paymentStatus === "VERIFIED") {
+          update['refund.status'] = "PENDING";
+          update['refund.amount'] = order.totalAmount;
+          update['refund.method'] = (order.collectedVia === 'NOT_COLLECTED') ? order.paymentMethod : order.collectedVia;
+        } else {
+          update['refund.status'] = "NOT_REQUIRED";
+        }
+        break;
+
+      case "COMPLETE_REFUND":
+        if (!order.refund || order.refund.status !== 'PENDING') {
+          return res.status(400).json({ success: false, message: "Only pending refunds can be completed." });
+        }
+        update['refund.status'] = "COMPLETED";
+        update['refund.processedAt'] = now;
+        
+        ledgerType = 'REFUND';
+        ledgerStatus = 'VERIFIED';
+        ledgerAmount = -order.totalAmount;
+        break;
+
+      case "RETRY_PAYMENT":
+        update.paymentStatus = "PENDING";
+        if (payload.method) update.paymentMethod = payload.method;
+        if (payload.method === "ONLINE" && payload.utr) {
+          update.utr = payload.utr.slice(-6);
+        }
+        break;
+
+      case "ACCEPT_ORDER":
+        if (order.paymentMethod === 'ONLINE' && order.paymentStatus !== 'VERIFIED') {
+          return res.status(400).json({ success: false, message: "ONLINE payment must be VERIFIED before accepting order." });
+        }
+        update.status = "ACCEPTED";
+        break;
+
+      case "COMPLETE_ORDER":
+        if (order.paymentMethod === 'ONLINE' && order.paymentStatus !== 'VERIFIED') {
+          return res.status(400).json({ success: false, message: "ONLINE payment must be VERIFIED before completing order." });
+        }
+        update.status = "COMPLETED";
+        if (order.paymentStatus !== 'VERIFIED') {
+          update.paymentDueStatus = "DUE";
+        }
+        break;
+
+      default:
+        return res.status(400).json({ success: false, message: "Invalid action type." });
+    }
+
+    // Step 2: Transaction for Ledger (if needed)
+    if (ledgerType) {
+        try {
+            await ledgerService.recordTransaction({
+                order: order, // Uses OLD values for calculation if needed, but schema uses amount
+                type: ledgerType,
+                amount: ledgerAmount,
+                mode: update.collectedVia || order.collectedVia || order.paymentMethod,
+                status: ledgerStatus
+            });
+        } catch (ledgerError) {
+            console.error(`[OrderController] Ledger recording failed:`, ledgerError);
+        }
+    }
+
+    // Step 3: Perform Update
+    const updatedOrder = await Order.findByIdAndUpdate(
+      orderId,
+      { $set: update },
+      { new: true }
+    );
+
+    const enrichedOrder = await getEnrichedOrder(updatedOrder);
+
+    // Socket Emissions
+    const io = req.app.get('io');
+    if (io) {
+      const adminRoom = enrichedOrder.restaurant.toString();
+      const customerRoom = enrichedOrder.deviceId;
+      
+      // Emit to admin
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+      
+      // Specific admin notifications
+      if (action === 'CANCEL_ORDER') io.to(adminRoom).emit('orderCancelled', enrichedOrder);
+      if (action === 'REJECT_ORDER') io.to(adminRoom).emit('orderRejected', enrichedOrder);
+      if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT') io.to(adminRoom).emit('paymentVerified', enrichedOrder);
+      
+      // Emit to customer - use both names for compatibility during migration
+      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+      io.to(customerRoom).emit('orderUpdate', enrichedOrder);
+      
+      // For specific payment retry logic if needed
+      if (action === 'REQUEST_RETRY') io.to(customerRoom).emit('paymentRetry', enrichedOrder);
+    }
+
+    // Sync on completion
+    if (update.status === 'COMPLETED' || ledgerType === 'PAYMENT') {
+        ledgerService.syncDailyLedger(updatedOrder.restaurant, updatedOrder.createdAt).catch(() => {});
+    }
+
+    return res.json({ success: true, data: enrichedOrder });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Get orders by device ID (for customer view)
 exports.getOrdersByDevice = async (req, res, next) => {
   try {
@@ -99,7 +299,7 @@ exports.getOrdersByDevice = async (req, res, next) => {
     }
 
     // Filter by status if provided
-    if (status && ['placed', 'preparing', 'served'].includes(status)) {
+    if (status && ['PLACED', 'ACCEPTED', 'COMPLETED', 'CANCELLED', 'REJECTED'].includes(status)) {
       query.status = status;
     }
 
@@ -277,19 +477,19 @@ exports.getAllOrders = async (req, res, next) => {
         $group: {
           _id: null,
           totalOrders: { $sum: 1 },
-          placed: { $sum: { $cond: [{ $eq: ['$status', 'placed'] }, 1, 0] } },
-          preparing: { $sum: { $cond: [{ $eq: ['$status', 'preparing'] }, 1, 0] } },
-          served: { $sum: { $cond: [{ $eq: ['$status', 'served'] }, 1, 0] } },
-          rejected: { $sum: { $cond: [{ $eq: ['$status', 'rejected'] }, 1, 0] } },
-          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+          placed: { $sum: { $cond: [{ $eq: ['$status', 'PLACED'] }, 1, 0] } },
+          accepted: { $sum: { $cond: [{ $eq: ['$status', 'ACCEPTED'] }, 1, 0] } },
+          completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'CANCELLED'] }, 1, 0] } },
           totalRevenue: {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$status', 'served'] },
+                  { $eq: ['$status', 'COMPLETED'] },
                   { $or: [
-                    { $eq: [{ $ifNull: ['$refund.status', 'none'] }, 'none'] },
-                    { $ne: ['$refund.status', 'refunded'] }
+                    { $eq: [{ $ifNull: ['$refund.status', 'NOT_REQUIRED'] }, 'NOT_REQUIRED'] },
+                    { $ne: ['$refund.status', 'COMPLETED'] }
                   ]}
                 ]},
                 '$totalAmount',
@@ -301,39 +501,39 @@ exports.getAllOrders = async (req, res, next) => {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentMethod', 'online'] },
+                  { $eq: ['$paymentMethod', 'ONLINE'] },
                   { $eq: ['$paymentStatus', 'PENDING'] },
-                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
                 ]},
                 1,
                 0
               ]
             }
           },
-          cashPending: {
+          counterPending: {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentMethod', 'cash'] },
+                  { $eq: ['$paymentMethod', 'COUNTER'] },
                   { $eq: ['$paymentStatus', 'PENDING'] },
-                  { $not: { $in: ['$status', ['rejected', 'cancelled']] } }
+                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
                 ]},
                 1,
                 0
               ]
             }
           },
-          totalRefunds: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, 1, 0] } },
-          totalRefundAmount: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, '$refund.amount', 0] } },
-          cashGross: {
+          totalRefunds: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, 1, 0] } },
+          totalRefundAmount: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, '$refund.amount', 0] } },
+          counterGross: {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentMethod', 'cash'] },
-                  { $eq: ['$status', 'served'] },
+                  { $eq: ['$paymentMethod', 'COUNTER'] },
+                  { $eq: ['$status', 'COMPLETED'] },
                   { $or: [
-                    { $eq: [{ $ifNull: ['$refund.status', 'none'] }, 'none'] },
-                    { $ne: ['$refund.status', 'refunded'] }
+                    { $eq: [{ $ifNull: ['$refund.status', 'NOT_REQUIRED'] }, 'NOT_REQUIRED'] },
+                    { $ne: ['$refund.status', 'COMPLETED'] }
                   ]}
                 ]},
                 '$totalAmount',
@@ -341,16 +541,16 @@ exports.getAllOrders = async (req, res, next) => {
               ]
             }
           },
-          cashRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, { $cond: [{ $eq: ['$paymentMethod', 'cash'] }, '$refund.amount', 0] }, 0] } },
+          counterRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, { $cond: [{ $eq: ['$paymentMethod', 'COUNTER'] }, '$refund.amount', 0] }, 0] } },
           onlineGross: {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentMethod', 'online'] },
-                  { $eq: ['$status', 'served'] },
+                  { $eq: ['$paymentMethod', 'ONLINE'] },
+                  { $eq: ['$status', 'COMPLETED'] },
                   { $or: [
-                    { $eq: [{ $ifNull: ['$refund.status', 'none'] }, 'none'] },
-                    { $ne: ['$refund.status', 'refunded'] }
+                    { $eq: [{ $ifNull: ['$refund.status', 'NOT_REQUIRED'] }, 'NOT_REQUIRED'] },
+                    { $ne: ['$refund.status', 'COMPLETED'] }
                   ]}
                 ]},
                 '$totalAmount',
@@ -358,16 +558,16 @@ exports.getAllOrders = async (req, res, next) => {
               ]
             }
           },
-          onlineRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'refunded'] }, { $cond: [{ $eq: ['$paymentMethod', 'online'] }, '$refund.amount', 0] }, 0] } }
+          onlineRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, { $cond: [{ $eq: ['$paymentMethod', 'ONLINE'] }, '$refund.amount', 0] }, 0] } }
         }
       }
     ];
 
     const [statsResult] = await Order.aggregate(statsPipeline);
     const stats = statsResult || {
-      totalOrders: 0, placed: 0, preparing: 0, served: 0, rejected: 0, cancelled: 0,
-      totalRevenue: 0, onlinePending: 0, cashPending: 0, totalRefunds: 0, totalRefundAmount: 0,
-      cashGross: 0, cashRefunded: 0, onlineGross: 0, onlineRefunded: 0
+      totalOrders: 0, placed: 0, accepted: 0, completed: 0, rejected: 0, cancelled: 0,
+      totalRevenue: 0, onlinePending: 0, counterPending: 0, totalRefunds: 0, totalRefundAmount: 0,
+      counterGross: 0, counterRefunded: 0, onlineGross: 0, onlineRefunded: 0
     };
 
     // Attach transactions for each order (batch query)
@@ -400,7 +600,7 @@ exports.updateOrderStatus = async (req, res, next) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    const validStatuses = ['placed', 'preparing', 'served'];
+    const validStatuses = ['PLACED', 'ACCEPTED', 'COMPLETED'];
 
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
@@ -409,11 +609,7 @@ exports.updateOrderStatus = async (req, res, next) => {
       });
     }
 
-    const order = await Order.findOneAndUpdate(
-      { _id: id, restaurant: req.userId },
-      { status },
-      { new: true }
-    );
+    const order = await Order.findOne({ _id: id, restaurant: req.userId });
 
     if (!order) {
       return res.status(404).json({
@@ -422,12 +618,30 @@ exports.updateOrderStatus = async (req, res, next) => {
       });
     }
 
-    // Update summary when order is served (for Analytics only, no financial change)
-    if (status === 'served') {
+    // ENFORCE SERVING RULE: do NOT serve (ACCEPTED or COMPLETED) if ONLINE and not VERIFIED
+    if (['ACCEPTED', 'COMPLETED'].includes(status)) {
+      if (order.paymentMethod === 'ONLINE' && order.paymentStatus !== 'VERIFIED') {
+        return res.status(400).json({
+          success: false,
+          message: 'Payment must be verified before serving online orders'
+        });
+      }
+    }
+
+    // If moving to COMPLETED and not VERIFIED, mark as DUE (Only for COUNTER, as ONLINE is blocked above)
+    if (status === 'COMPLETED' && order.paymentStatus !== 'VERIFIED') {
+      order.paymentDueStatus = 'DUE';
+    }
+
+    order.status = status;
+    await order.save();
+
+    // Update summary when order is COMPLETED (for Analytics only, no financial change)
+    if (status === 'COMPLETED') {
       try {
         await ledgerService.syncDailyLedger(req.userId, order.createdAt);
       } catch (ledgerError) {
-        console.error('Failed to sync summary on order served:', ledgerError);
+        console.error('Failed to sync summary on order completed:', ledgerError);
       }
     }
 
@@ -564,11 +778,11 @@ exports.submitFeedback = async (req, res, next) => {
   }
 };
 
-// Verify online payment
+// Verify online payment (Admin)
 exports.verifyPayment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { utrNumber } = req.body;
+    const { utr } = req.body;
 
     const order = await Order.findOne({ _id: id, restaurant: req.userId });
 
@@ -579,7 +793,7 @@ exports.verifyPayment = async (req, res, next) => {
       });
     }
 
-    if (order.paymentMethod !== 'online') {
+    if (order.paymentMethod !== 'ONLINE') {
       return res.status(400).json({
         success: false,
         message: 'This order is not an online payment order'
@@ -595,8 +809,13 @@ exports.verifyPayment = async (req, res, next) => {
 
     // Update payment verification
     order.paymentStatus = 'VERIFIED';
-    if (utrNumber) {
-      order.utrNumber = utrNumber;
+    order.collectedVia = 'ONLINE';
+    order.collectedAt = new Date();
+    order.collectedBy = req.userId;
+    order.paymentDueStatus = 'CLEAR';
+    
+    if (utr) {
+      order.utr = utr.substring(0, 6);
     }
 
     await order.save();
@@ -625,7 +844,6 @@ exports.verifyPayment = async (req, res, next) => {
         io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
         io.to(customerRoom).emit('paymentVerified', enrichedOrder);
       }
-      console.log(`[Socket] Payment verified emitted: ${order._id} room: ${adminRoom}`);
     }
 
     res.json({
@@ -638,10 +856,87 @@ exports.verifyPayment = async (req, res, next) => {
   }
 };
 
-// Mark cash as collected
-exports.collectCash = async (req, res, next) => {
+// Mark online payment as RETRY (Admin)
+exports.markPaymentRetry = async (req, res, next) => {
   try {
     const { id } = req.params;
+
+    const order = await Order.findOne({ _id: id, restaurant: req.userId });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (order.paymentMethod !== 'ONLINE') {
+      return res.status(400).json({ success: false, message: 'Only ONLINE payments can be marked for retry' });
+    }
+
+    order.paymentStatus = 'RETRY';
+    await order.save();
+
+    const enrichedOrder = await getEnrichedOrder(order);
+
+    // Emit update
+    const io = req.app.get('io');
+    if (io) {
+      const adminRoom = (order.restaurant || req.userId)?.toString();
+      const customerRoom = order.deviceId;
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+      io.to(customerRoom).emit('paymentRetry', enrichedOrder);
+    }
+
+    res.json({ success: true, message: 'Payment marked for retry', data: enrichedOrder });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Retry/Update payment (Customer)
+exports.retryPayment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { paymentMethod, utr, deviceId } = req.body;
+
+    const order = await Order.findOne({ _id: id, deviceId });
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // Update payment details
+    if (paymentMethod) order.paymentMethod = paymentMethod;
+    if (utr) order.utr = utr.substring(0, 6);
+    
+    order.paymentStatus = 'PENDING';
+    order.retryCount = (order.retryCount || 0) + 1;
+
+    await order.save();
+
+    const enrichedOrder = await getEnrichedOrder(order);
+
+    // Emit update to admin
+    const io = req.app.get('io');
+    if (io) {
+      const adminRoom = order.restaurant.toString();
+      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+    }
+
+    res.json({ success: true, message: 'Payment updated successfully', data: enrichedOrder });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Collect Payment at counter (Admin)
+exports.collectPayment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { collectedVia, utr } = req.body; // collectedVia: CASH or ONLINE
+
+    if (!['CASH', 'ONLINE'].includes(collectedVia)) {
+      return res.status(400).json({ success: false, message: 'Invalid collection method. Use CASH or ONLINE.' });
+    }
 
     const order = await Order.findOne({ _id: id, restaurant: req.userId });
 
@@ -652,13 +947,6 @@ exports.collectCash = async (req, res, next) => {
       });
     }
 
-    if (order.paymentMethod !== 'cash') {
-      return res.status(400).json({
-        success: false,
-        message: 'This order is not a cash payment order'
-      });
-    }
-
     if (order.paymentStatus === 'VERIFIED') {
       return res.status(400).json({
         success: false,
@@ -666,7 +954,16 @@ exports.collectCash = async (req, res, next) => {
       });
     }
 
-    order.paymentStatus = 'VERIFIED'; // For cash, collection = verified
+    order.paymentStatus = 'VERIFIED';
+    order.collectedVia = collectedVia;
+    order.collectedAt = new Date();
+    order.collectedBy = req.userId;
+    order.paymentDueStatus = 'CLEAR';
+    
+    if (utr) {
+      order.utr = utr.substring(0, 6);
+    }
+
     await order.save();
 
     // Verify existing TRANSACTION and Sync
@@ -693,12 +990,11 @@ exports.collectCash = async (req, res, next) => {
         io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
         io.to(customerRoom).emit('paymentVerified', enrichedOrder);
       }
-      console.log(`[Socket] Cash collected emitted: ${order._id} room: ${adminRoom}`);
     }
 
     res.json({
       success: true,
-      message: 'Cash marked as collected',
+      message: `Payment collected via ${collectedVia}`,
       data: enrichedOrder
     });
   } catch (error) {
@@ -721,8 +1017,8 @@ exports.rejectOrder = async (req, res, next) => {
       });
     }
 
-    // Can only reject placed orders (not preparing or served)
-    if (order.status !== 'placed') {
+    // Can only reject placed orders (not ACCEPTED or COMPLETED)
+    if (order.status !== 'PLACED') {
       return res.status(400).json({
         success: false,
         message: 'Can only reject orders that have not been approved yet'
@@ -730,20 +1026,23 @@ exports.rejectOrder = async (req, res, next) => {
     }
 
     // Guard against double-processing if the order was already rejected
-    if (order.status === 'rejected') {
+    if (order.status === 'REJECTED') {
       return res.status(400).json({ success: false, message: 'Order is already rejected' });
     }
 
-    order.status = 'rejected';
+    order.status = 'REJECTED';
     order.rejectionReason = reason || 'Order rejected by admin';
     
     // Auto-Refund if it was already verified
     if (order.paymentStatus === 'VERIFIED') {
       order.refund = {
-        status: 'refunded',
+        status: 'PENDING',
         method: order.paymentMethod,
-        amount: order.totalAmount,
-        processedAt: new Date()
+        amount: order.totalAmount
+      };
+    } else {
+      order.refund = {
+        status: 'NOT_REQUIRED'
       };
     }
     
@@ -810,32 +1109,34 @@ exports.cancelOrder = async (req, res, next) => {
       });
     }
 
-    // Can only cancel placed orders (not preparing, served, or already cancelled/rejected)
-    if (order.status !== 'placed') {
-      return res.status(400).json({
-        success: false,
-        message: 'Can only cancel orders that have not been approved yet'
-      });
-    }
-
-    // Guard against double-processing if the order was already cancelled
-    if (order.status === 'cancelled') {
+    // Can only cancel placed orders
+    if (order.status === 'CANCELLED') {
       return res.status(400).json({ success: false, message: 'Order is already cancelled' });
     }
 
-    order.status = 'cancelled';
+    if (order.status !== 'PLACED') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot cancel order once it is being prepared or completed'
+      });
+    }
+
+    order.status = 'CANCELLED';
     order.cancellationReason = reason || bodyReason || 'Order cancelled by customer';
     
-    // Auto-Refund if it was already verified
+    // Handle refund if already verified
     if (order.paymentStatus === 'VERIFIED') {
       order.refund = {
-        status: 'refunded',
+        status: 'PENDING',
         method: order.paymentMethod,
-        amount: order.totalAmount,
-        processedAt: new Date()
+        amount: order.totalAmount
+      };
+    } else {
+      order.refund = {
+        status: 'NOT_REQUIRED'
       };
     }
-    
+
     await order.save();
 
     // Financial Logic: Revert the payment with a REFUND transaction
@@ -1020,9 +1321,9 @@ exports.sendReportEmail = async (req, res, next) => {
     // Prepare Email Content
     const summary = {
       'Total Orders': orders.length,
-      'Total Revenue': `₹${orders.filter(o => o.status === 'served').reduce((sum, o) => sum + o.totalAmount, 0).toFixed(2)}`,
-      'Served Orders': orders.filter(o => o.status === 'served').length,
-      'Cancelled/Rejected': orders.filter(o => ['cancelled', 'rejected'].includes(o.status)).length
+      'Total Revenue': `₹${orders.filter(o => o.status === 'COMPLETED').reduce((sum, o) => sum + o.totalAmount, 0).toFixed(2)}`,
+      'Completed Orders': orders.filter(o => o.status === 'COMPLETED').length,
+      'Cancelled/Rejected': orders.filter(o => ['CANCELLED', 'REJECTED'].includes(o.status)).length
     };
 
     const html = reportEmailTemplate({

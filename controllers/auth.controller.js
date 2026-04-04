@@ -116,10 +116,36 @@ exports.verifyOtp = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
     }
 
-    // Mark as verified
+    // Mark as verified & set up 3-month free trial
+    const { generateShortId } = require('../utils/id.util');
+    let shortId;
+    let isUnique = false;
+    let attempts = 0;
+
+    while (!isUnique && attempts < 10) {
+      shortId = generateShortId();
+      const existing = await RestaurantAdmin.findOne({ shortId });
+      if (!existing) isUnique = true;
+      attempts++;
+    }
+
+    const trialDays = 90;
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + trialDays);
+
     user.isVerified = true;
+    user.shortId = shortId;
     user.verificationCode = undefined;
     user.verificationCodeExpires = undefined;
+    
+    // Set trial initialization
+    user.subscription = {
+      type: 'trial',
+      status: 'active',
+      startDate: new Date(),
+      expiryDate: expiryDate
+    };
+    
     await user.save();
 
     // Now log them in (Generate tokens)
@@ -167,6 +193,7 @@ exports.verifyOtp = async (req, res, next) => {
         phone: user.phone,
         description: user.description,
         logo: user.logo,
+        shortId: user.shortId,
         subscription: user.subscription
       }
     });
@@ -275,6 +302,7 @@ exports.login = async (req, res, next) => {
         phone: user.phone,
         description: user.description,
         logo: user.logo,
+        shortId: user.shortId,
         subscription: user.subscription
       }
     });

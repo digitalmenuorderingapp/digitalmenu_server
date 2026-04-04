@@ -105,8 +105,8 @@ const restaurantAdminSchema = new mongoose.Schema({
   subscription: {
     type: { 
       type: String, 
-      enum: ['free', 'paid'], 
-      default: 'free' 
+      enum: ['trial', 'paid', 'free'], 
+      default: 'trial' 
     },
     status: { 
       type: String, 
@@ -127,12 +127,20 @@ const restaurantAdminSchema = new mongoose.Schema({
   requestCount: {
     type: Number,
     default: 0
+  },
+  shortId: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true,
+    uppercase: true
   }
 }, {
   timestamps: true,
 });
 
-// Index for efficient token lookups
+// Index for efficient lookups
+restaurantAdminSchema.index({ shortId: 1 });
 restaurantAdminSchema.index({ 'refreshTokens.deviceId': 1 });
 restaurantAdminSchema.index({ 'refreshTokens.tokenHash': 1 });
 

@@ -135,7 +135,12 @@ exports.validateOrder = [
     .withMessage('Total amount must be a positive number'),
   body('paymentMethod')
     .optional()
-    .isIn(['cash', 'online'])
-    .withMessage('Payment method must be cash or online'),
+    .isIn(['COUNTER', 'ONLINE', 'cash', 'online'])
+    .withMessage('Payment method must be COUNTER or ONLINE'),
+  body('utr')
+    .optional()
+    .isString()
+    .isLength({ max: 6 })
+    .withMessage('UTR must be 6 characters or less'),
   exports.handleValidationErrors
 ];
