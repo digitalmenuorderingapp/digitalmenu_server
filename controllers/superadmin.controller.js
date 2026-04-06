@@ -455,7 +455,7 @@ const logout = async (req, res) => {
 const autoLogin = async (req, res) => {
   try {
     const hardcodedEmail = 'sahin401099@gmail.com';
-    
+
     // Find or create superadmin
     let user = await Superadmin.findOne({ email: hardcodedEmail });
     if (!user) {
@@ -471,7 +471,7 @@ const autoLogin = async (req, res) => {
 
     // Store refresh token
     if (!user.refreshTokens) user.refreshTokens = [];
-    
+
     const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceId);
     const tokenData = {
       tokenHash: hashToken(refreshToken),
@@ -535,20 +535,20 @@ const getCloudinaryStats = async (req, res) => {
     const storageUsed = usage.storage?.usage || 0;
     let storageLimit = usage.storage?.limit || 0;
     let bandwidthLimit = usage.bandwidth?.limit || 0;
-    
+
     // Cloudinary Free plan defaults: 25GB storage, 25GB bandwidth per month
     const plan = usage.plan || 'Free';
     if (plan === 'Free') {
       if (storageLimit === 0) storageLimit = 25 * 1024 * 1024 * 1024; // 25 GB
       if (bandwidthLimit === 0) bandwidthLimit = 25 * 1024 * 1024 * 1024; // 25 GB per month
     }
-    
+
     const percentage = storageLimit > 0 ? ((storageUsed / storageLimit) * 100).toFixed(1) : 0;
 
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
-    
+
     res.json({
       success: true,
       cloudinary: {
@@ -584,7 +584,7 @@ const getCloudinaryStats = async (req, res) => {
 const getMongoStats = async (req, res) => {
   try {
     const mongoose = require('mongoose');
-    
+
     // Check connection state
     const mongoState = mongoose.connection.readyState;
     const mongoStatus = {
@@ -628,7 +628,7 @@ const getMongoStats = async (req, res) => {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
-    
+
     res.json({
       success: true,
       mongodb: {
@@ -684,7 +684,7 @@ const triggerMonthlyReports = async (req, res) => {
     }
 
     // Run in background to prevent timeout
-    processMonthlyReports(restaurantIds).catch(err => 
+    processMonthlyReports(restaurantIds).catch(err =>
       console.error('[Superadmin] Background report trigger failed:', err)
     );
 
@@ -713,7 +713,7 @@ const triggerMonthlyReports = async (req, res) => {
 const getAuditLogs = async (req, res) => {
   try {
     const { type, status, search, page = 1, limit = 50 } = req.query;
-    
+
     const query = {};
     if (type && type !== 'all') query.type = type;
     if (status && status !== 'all') query.status = status;
