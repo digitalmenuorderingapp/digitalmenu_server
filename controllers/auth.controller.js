@@ -49,15 +49,22 @@ const accessCookieOptions = {
 
 // Helper: Check and update subscription status
 const checkSubscriptionStatus = async (user) => {
-  if (!user.subscription || !user.subscription.expiryDate) {
-    if (user.subscription && user.subscription.type === 'free') {
-      return { ...user.subscription.toObject(), daysLeft: 9999 };
-    }
-    return { ...user.subscription?.toObject(), daysLeft: 0 };
+  if (!user.subscription) return { type: 'free', status: 'inactive', daysLeft: 0 };
+
+  const { type, expiryDate, status } = user.subscription;
+
+  // 1. Handle Lifetime Free (Legacy/Promotional)
+  if (type === 'free') {
+    return { ...user.subscription.toObject(), daysLeft: 9999, status: 'active' };
+  }
+
+  // 2. Handle Trial or Paid (requires expiryDate)
+  if (!expiryDate) {
+    return { ...user.subscription.toObject(), daysLeft: 0, status: 'inactive' };
   }
 
   const now = new Date();
-  const expiry = new Date(user.subscription.expiryDate);
+  const expiry = new Date(expiryDate);
   const diffTime = expiry.getTime() - now.getTime();
   const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
@@ -810,10 +817,10 @@ exports.sendDeleteAccountOtp = async (req, res, next) => {
     });
   } catch (error) {
     console.error('Send delete account OTP error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: error.message || 'Failed to send email. Please try again.',
-      error: process.env.NODE_ENV === 'development' ? error.stack : undefined 
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
@@ -909,7 +916,7 @@ exports.deleteAccount = async (req, res, next) => {
       fromDate: oldestTx ? oldestTx.transactionDate : new Date('2000-01-01'),
       toDate: new Date()
     };
-    
+
     await sendDetailedReportEmail({
       restaurant: user,
       emailType: 'DELETION',
