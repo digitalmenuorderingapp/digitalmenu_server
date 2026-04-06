@@ -41,6 +41,7 @@ const checkOrigin = (origin, callback) => {
 // Initialize Socket.IO
 const io = socketService.init(server, checkOrigin);
 app.set('io', io);
+serverMonitor.setIo(io);
 
 // Middleware
 app.use(express.json());

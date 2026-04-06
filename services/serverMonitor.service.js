@@ -4,6 +4,7 @@ const DailyServerUsage = require('../models/DailyServerUsage');
 
 class ServerMonitor {
   constructor() {
+    this.io = null;
     this.requestCount = 0;
     this.responseTimes = [];
     this.currentMinuteRequests = 0;
@@ -58,6 +59,10 @@ class ServerMonitor {
     this.currentMinuteStart = now;
   }
 
+  setIo(io) {
+    this.io = io;
+  }
+
   collectSystemMetrics() {
     const now = new Date();
     const hour = now.getHours();
@@ -69,6 +74,11 @@ class ServerMonitor {
     // Memory Usage
     const memoryUsage = this.getMemoryUsage();
     this.hourlyStats[hour].memoryUsage.push(memoryUsage);
+
+    // Emit real-time stats via socket if available
+    if (this.io) {
+      this.io.to('superadmin').emit('serverStatsUpdate', this.getCurrentStats());
+    }
   }
 
   getCPUUsage() {

@@ -14,7 +14,8 @@ const {
   getMe,
   getCloudinaryStats,
   getMongoStats,
-  triggerMonthlyReports
+  triggerMonthlyReports,
+  getAuditLogs
 } = require('../controllers/superadmin.controller');
 const { superadminProtect } = require('../middleware/superadmin.middleware');
 
@@ -35,5 +36,6 @@ router.patch('/restaurants/:restaurantId/subscription', superadminProtect, updat
 router.get('/cloudinary-stats', superadminProtect, getCloudinaryStats);
 router.get('/mongo-stats', superadminProtect, getMongoStats);
 router.post('/trigger-monthly-reports', superadminProtect, triggerMonthlyReports);
+router.get('/logs', superadminProtect, getAuditLogs);
 
 module.exports = router;

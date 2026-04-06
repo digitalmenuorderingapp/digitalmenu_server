@@ -766,6 +766,45 @@ const triggerMonthlyReports = async (req, res) => {
   }
 };
 
+/**
+ * Get system audit logs with filtering and pagination
+ */
+const getAuditLogs = async (req, res) => {
+  try {
+    const { type, status, search, page = 1, limit = 50 } = req.query;
+    
+    const query = {};
+    if (type && type !== 'all') query.type = type;
+    if (status && status !== 'all') query.status = status;
+    if (search) {
+      query.$or = [
+        { user: { $regex: search, $options: 'i' } },
+        { action: { $regex: search, $options: 'i' } },
+        { ip: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const logs = await AuditLog.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .exec();
+
+    const count = await AuditLog.countDocuments(query);
+
+    res.json({
+      success: true,
+      logs,
+      totalPages: Math.ceil(count / limit),
+      currentPage: page,
+      totalLogs: count
+    });
+  } catch (error) {
+    console.error('Get audit logs error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
 module.exports = {
   requestOTP,
   verifyOTP,
@@ -781,5 +820,6 @@ module.exports = {
   getMe,
   getCloudinaryStats,
   getMongoStats,
-  triggerMonthlyReports
+  triggerMonthlyReports,
+  getAuditLogs
 };
