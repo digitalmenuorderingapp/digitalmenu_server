@@ -12,7 +12,9 @@ cloudinary.config({
     await cloudinary.api.ping();
     console.log('✅ Cloudinary Connected Successfully');
   } catch (error) {
-    console.error('❌ Cloudinary Connection Failed:', error.message);
+    console.error('❌ Cloudinary Connection Failed:', error?.message || error || 'Unknown error');
+    console.error('   Cloud Name:', process.env.CLOUDINARY_CLOUD_NAME || 'NOT SET');
+    console.error('   API Key:', process.env.CLOUDINARY_API_KEY ? '***' + process.env.CLOUDINARY_API_KEY.slice(-4) : 'NOT SET');
   }
 })();
 
