@@ -15,11 +15,11 @@ const app = express();
 app.set('trust proxy', 1);
 const server = http.createServer(app);
 
+const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const allowedOrigins = [
+  ...envOrigins,
   'https://digitalmenuorder.vercel.app',
   'https://digitalmenu-superadmin.vercel.app',
-  'http://localhost:3001',
-  'http://localhost:3000'
 ].filter(origin => origin && typeof origin === 'string')
   .map(origin => origin.trim().replace(/\/$/, ''));
 
