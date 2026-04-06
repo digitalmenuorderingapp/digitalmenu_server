@@ -46,7 +46,7 @@ app.set('io', io);
 app.use(express.json());
 app.use(cookieParser());
 app.use(systemMonitor);
-app.use(serverMonitor.trackRequest);
+app.use((req, res, next) => serverMonitor.trackRequest(req, res, next));
 
 // CORS configuration
 app.use(cors({
