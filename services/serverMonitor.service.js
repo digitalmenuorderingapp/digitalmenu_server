@@ -19,7 +19,7 @@ class ServerMonitor {
       responseTimes: [],
       cpuUsage: [],
       memoryUsage: [],
-      errors: 0
+      errorCount: 0
     }));
     
     this.startMonitoring();
@@ -176,10 +176,10 @@ class ServerMonitor {
       dailyStats.dbOperations.slowQueries = slowQueries;
       
       dailyStats.cpu.averageUsage = this.calculateHourlyAverage('cpuUsage');
-      dailyStats.cpu.peakUsage = Math.max(...this.hourlyStats.map(h => Math.max(...h.cpuUsage)));
+      dailyStats.cpu.peakUsage = Math.max(0, ...this.hourlyStats.map(h => h.cpuUsage.length > 0 ? Math.max(...h.cpuUsage) : 0));
       
       dailyStats.memory.averageUsage = this.calculateHourlyAverage('memoryUsage');
-      dailyStats.memory.peakUsage = Math.max(...this.hourlyStats.map(h => Math.max(...h.memoryUsage)));
+      dailyStats.memory.peakUsage = Math.max(0, ...this.hourlyStats.map(h => h.memoryUsage.length > 0 ? Math.max(...h.memoryUsage) : 0));
       dailyStats.memory.totalUsed = Math.round((os.totalmem() - os.freemem()) / 1024 / 1024); // MB
       dailyStats.memory.totalAvailable = Math.round(os.totalmem() / 1024 / 1024); // MB
       
@@ -293,7 +293,7 @@ class ServerMonitor {
       responseTimes: [],
       cpuUsage: [],
       memoryUsage: [],
-      errors: 0
+      errorCount: 0
     }));
   }
 }
