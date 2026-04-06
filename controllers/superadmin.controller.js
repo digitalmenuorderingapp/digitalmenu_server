@@ -240,85 +240,6 @@ const getSystemStats = async (req, res) => {
 };
 
 /**
- * Check External Services & Internal Systems Status
- */
-const getServiceStatus = async (req, res) => {
-  try {
-    // Check MongoDB connection details
-    const mongoState = mongoose.connection.readyState;
-    const mongoStatus = {
-      0: 'disconnected',
-      1: 'connected',
-      2: 'connecting',
-      3: 'disconnecting'
-    }[mongoState] || 'unknown';
-
-    // Get MongoDB stats
-    let mongoStats = null;
-    if (mongoState === 1) {
-      try {
-        const dbStats = await mongoose.connection.db.stats();
-        mongoStats = {
-          dataSize: (dbStats.dataSize / 1024 / 1024).toFixed(2) + ' MB',
-          storageSize: (dbStats.storageSize / 1024 / 1024).toFixed(2) + ' MB',
-          collections: dbStats.collections,
-          documents: dbStats.objects
-        };
-      } catch (e) {
-        console.error('MongoDB stats error:', e);
-      }
-    }
-
-    // Check Cloudinary status and storage
-    let cloudinaryStatus = 'error';
-    let cloudinaryStorage = null;
-    try {
-      const cloudinary = require('cloudinary').v2;
-      cloudinary.config({
-        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-        api_key: process.env.CLOUDINARY_API_KEY,
-        api_secret: process.env.CLOUDINARY_API_SECRET
-      });
-
-      // Get usage stats
-      const usage = await cloudinary.api.usage();
-      cloudinaryStatus = 'operational';
-      cloudinaryStorage = {
-        used: (usage.storage?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
-        limit: (usage.storage?.limit / 1024 / 1024 || 0).toFixed(2) + ' MB',
-        bandwidth: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
-        requests: usage.requests?.usage || 0,
-        percentage: usage.storage?.limit
-          ? ((usage.storage.usage / usage.storage.limit) * 100).toFixed(1)
-          : 0
-      };
-    } catch (cloudinaryError) {
-      console.error('Cloudinary status check error:', cloudinaryError.message);
-      cloudinaryStatus = 'error';
-    }
-
-    const status = {
-      mongodb: {
-        status: mongoStatus,
-        stats: mongoStats
-      },
-      cloudinary: {
-        status: cloudinaryStatus,
-        storage: cloudinaryStorage
-      },
-      email: 'operational',
-      cron: 'running',
-      socket: req.app.get('io') ? 'operational' : 'error'
-    };
-
-    res.json({ success: true, status });
-  } catch (error) {
-    console.error('Service status check error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-};
-
-/**
  * Emit real-time service status to superadmin via socket.io
  * This is called periodically to keep superadmin dashboard updated
  */
@@ -412,124 +333,6 @@ const getRestaurants = async (req, res) => {
     res.json({ success: true, restaurants: enrichedRestaurants });
   } catch (error) {
     console.error('Get restaurants error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-};
-
-/**
- * Detailed Dashboard Analytics & Trend Data
- */
-const getAnalytics = async (req, res) => {
-  try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const totalOrdersToday = await Order.countDocuments({ createdAt: { $gte: today } });
-    const newUsersToday = await RestaurantAdmin.countDocuments({ createdAt: { $gte: today } });
-
-    // Revenue trend (Approx)
-    const orders = await Order.find({ createdAt: { $gte: today }, status: 'served' });
-    const revenueToday = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-
-    // Get real last 7 days data for charts
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(today.getDate() - 6);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
-
-    const weeklyDataMap = {};
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(sevenDaysAgo);
-      d.setDate(d.getDate() + i);
-      const dayStr = d.toLocaleDateString('en-US', { weekday: 'short' });
-      weeklyDataMap[dayStr] = { name: dayStr, orders: 0, users: 0, date: d.toISOString().split('T')[0] };
-    }
-
-    const weeklyOrders = await Order.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    const weeklyUsers = await RestaurantAdmin.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } },
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    Object.values(weeklyDataMap).forEach(dayObj => {
-      const orderMatch = weeklyOrders.find(o => o._id === dayObj.date);
-      if (orderMatch) dayObj.orders = orderMatch.count;
-      const userMatch = weeklyUsers.find(u => u._id === dayObj.date);
-      if (userMatch) dayObj.restaurants = userMatch.count;
-    });
-
-    const weeklyData = Object.values(weeklyDataMap);
-
-    res.json({
-      success: true,
-      analytics: {
-        today: {
-          orders: totalOrdersToday,
-          newUsers: newUsersToday,
-          revenue: revenueToday
-        },
-        weeklyData
-      }
-    });
-  } catch (error) {
-    console.error('Get analytics error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-};
-
-/**
- * Platform-wide Orders Overview (Aggregate counts, no identities)
- */
-const getOrdersOverview = async (req, res) => {
-  try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const stats = await Order.aggregate([
-      { $match: { createdAt: { $gte: today } } },
-      {
-        $group: {
-          _id: null,
-          totalOrders: { $sum: 1 },
-          totalRevenue: { $sum: '$totalAmount' },
-          avgOrderValue: { $avg: '$totalAmount' },
-          orderTypes: {
-            $push: '$orderType'
-          }
-        }
-      }
-    ]);
-
-    // Group types manually for simplicity in this aggregate
-    const typeDistribution = stats[0]?.orderTypes?.reduce((acc, type) => {
-      acc[type] = (acc[type] || 0) + 1;
-      return acc;
-    }, {}) || {};
-
-    res.json({
-      success: true,
-      stats: {
-        totalOrders: stats[0]?.totalOrders || 0,
-        totalRevenue: stats[0]?.totalRevenue || 0,
-        avgOrderValue: stats[0]?.avgOrderValue || 0,
-        typeDistribution
-      }
-    });
-  } catch (error) {
-    console.error('Orders overview error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -706,46 +509,68 @@ const logout = async (req, res) => {
 };
 
 /**
- * Get Audit Logs with pagination and filtering
+ * Auto-login for superadmin (bypasses OTP - development/controlled environment only)
  */
-const getAuditLogs = async (req, res) => {
+const autoLogin = async (req, res) => {
   try {
-    const { type, status, search, page = 1, limit = 20 } = req.query;
-
-    // Build filter query
-    const filter = {};
-    if (type) filter.type = type;
-    if (status) filter.status = status;
-    if (search) {
-      filter.$or = [
-        { action: { $regex: search, $options: 'i' } },
-        { user: { $regex: search, $options: 'i' } }
-      ];
+    const hardcodedEmail = 'sahin401099@gmail.com';
+    
+    // Find or create superadmin
+    let user = await Superadmin.findOne({ email: hardcodedEmail });
+    if (!user) {
+      user = await Superadmin.create({ email: hardcodedEmail });
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    // Generate tokens
+    const { accessToken, refreshToken } = generateSuperadminTokens(user._id);
 
-    // Get logs with pagination
-    const logs = await AuditLog.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
+    // Device info
+    const deviceId = req.body.deviceId || 'auto_session';
+    const deviceName = req.body.deviceName || 'Auto Login';
 
-    // Get total count for pagination
-    const total = await AuditLog.countDocuments(filter);
+    // Store refresh token
+    if (!user.refreshTokens) user.refreshTokens = [];
+    
+    const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceId);
+    const tokenData = {
+      tokenHash: hashToken(refreshToken),
+      deviceId,
+      deviceName,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      isOnline: true,
+      lastSeen: new Date(),
+      sessions: [{ loggedInAt: new Date() }]
+    };
+
+    if (tokenIndex !== -1) {
+      user.refreshTokens[tokenIndex] = tokenData;
+    } else {
+      user.refreshTokens.push(tokenData);
+    }
+
+    await user.save();
+
+    // Log activity
+    await logActivity({
+      type: 'auth',
+      action: 'Superadmin Auto-Login',
+      user: hardcodedEmail,
+      req
+    });
+
+    // Set cookies
+    res.cookie('accessToken', accessToken, accessCookieOptions);
+    res.cookie('refreshToken', refreshToken, cookieOptions);
 
     res.json({
       success: true,
-      logs,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
+      message: 'Auto-login successful',
+      accessToken,
+      user: { id: user._id, email: user.email, role: 'superadmin' }
     });
   } catch (error) {
-    console.error('Get audit logs error:', error);
+    console.error('Auto-login error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -767,28 +592,40 @@ const getCloudinaryStats = async (req, res) => {
 
     // Calculate storage metrics
     const storageUsed = usage.storage?.usage || 0;
-    const storageLimit = usage.storage?.limit || 0;
+    let storageLimit = usage.storage?.limit || 0;
+    let bandwidthLimit = usage.bandwidth?.limit || 0;
+    
+    // Cloudinary Free plan defaults: 25GB storage, 25GB bandwidth per month
+    const plan = usage.plan || 'Free';
+    if (plan === 'Free') {
+      if (storageLimit === 0) storageLimit = 25 * 1024 * 1024 * 1024; // 25 GB
+      if (bandwidthLimit === 0) bandwidthLimit = 25 * 1024 * 1024 * 1024; // 25 GB per month
+    }
+    
     const percentage = storageLimit > 0 ? ((storageUsed / storageLimit) * 100).toFixed(1) : 0;
 
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    
     res.json({
       success: true,
       cloudinary: {
         status: 'operational',
-        storage: {
-          used: storageUsed,
-          limit: storageLimit,
-          usedFormatted: (storageUsed / 1024 / 1024).toFixed(2) + ' MB',
-          limitFormatted: (storageLimit / 1024 / 1024).toFixed(2) + ' MB',
-          percentage: parseFloat(percentage),
-          bytesUsed: storageUsed,
-          bytesLimit: storageLimit
-        },
+        used: storageUsed,
+        limit: storageLimit,
+        usedFormatted: (storageUsed / 1024 / 1024).toFixed(2) + ' MB',
+        limitFormatted: (storageLimit / 1024 / 1024).toFixed(2) + ' MB',
+        percentage: parseFloat(percentage),
         bandwidth: {
           used: usage.bandwidth?.usage || 0,
-          formatted: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB'
+          limit: bandwidthLimit,
+          formatted: (usage.bandwidth?.usage / 1024 / 1024 || 0).toFixed(2) + ' MB',
+          limitFormatted: (bandwidthLimit / 1024 / 1024).toFixed(2) + ' MB',
+          percentage: bandwidthLimit > 0 ? ((usage.bandwidth?.usage || 0) / bandwidthLimit * 100).toFixed(1) : 0
         },
         requests: usage.requests?.usage || 0,
-        plan: usage.plan || 'Free'
+        plan: plan
       }
     });
   } catch (error) {
@@ -796,6 +633,93 @@ const getCloudinaryStats = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch Cloudinary stats'
+    });
+  }
+};
+
+/**
+ * Get MongoDB usage stats
+ */
+const getMongoStats = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    
+    // Check connection state
+    const mongoState = mongoose.connection.readyState;
+    const mongoStatus = {
+      0: 'disconnected',
+      1: 'connected',
+      2: 'connecting',
+      3: 'disconnecting'
+    }[mongoState] || 'unknown';
+
+    if (mongoState !== 1) {
+      return res.status(503).json({
+        success: false,
+        message: 'MongoDB not connected',
+        status: mongoStatus
+      });
+    }
+
+    // Get database stats
+    const dbStats = await mongoose.connection.db.stats();
+    const adminStats = await mongoose.connection.db.admin().serverStatus();
+
+    // Calculate storage metrics
+    const dataSize = dbStats.dataSize || 0;
+    const storageSize = dbStats.storageSize || 0;
+    const indexSize = dbStats.indexSize || 0;
+    const totalSize = storageSize + indexSize;
+
+    // Helper to format bytes
+    const formatBytes = (bytes) => {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    // MongoDB Atlas Free Tier limits: 512 MB storage, 100 operations/sec
+    const freeTierStorageLimit = 512 * 1024 * 1024; // 512 MB
+    const storagePercentage = (totalSize / freeTierStorageLimit * 100).toFixed(1);
+
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    
+    res.json({
+      success: true,
+      mongodb: {
+        status: 'connected',
+        dataSize: dataSize,
+        storageSize: storageSize,
+        indexSize: indexSize,
+        totalSize: totalSize,
+        dataSizeFormatted: formatBytes(dataSize),
+        storageSizeFormatted: formatBytes(storageSize),
+        indexSizeFormatted: formatBytes(indexSize),
+        totalSizeFormatted: formatBytes(totalSize),
+        limit: freeTierStorageLimit,
+        limitFormatted: formatBytes(freeTierStorageLimit),
+        percentage: parseFloat(storagePercentage),
+        opsPerSecondLimit: 100,
+        collections: dbStats.collections,
+        documents: dbStats.objects,
+        indexes: dbStats.indexes,
+        avgObjSize: dbStats.avgObjSize || 0,
+        serverInfo: {
+          version: adminStats.version,
+          uptime: adminStats.uptime,
+          connections: adminStats.connections
+        }
+      }
+    });
+  } catch (error) {
+    console.error('MongoDB stats error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch MongoDB stats'
     });
   }
 };
@@ -845,19 +769,17 @@ const triggerMonthlyReports = async (req, res) => {
 module.exports = {
   requestOTP,
   verifyOTP,
+  autoLogin,
   getSystemStats,
-  getServiceStatus,
   emitServiceStatus,
-  getAnalytics,
-  getOrdersOverview,
   getRestaurants,
   getRestaurantDetail,
   updateRestaurantStatus,
   updateSubscription,
   refreshSuperadminToken,
   logout,
-  getAuditLogs,
   getMe,
   getCloudinaryStats,
+  getMongoStats,
   triggerMonthlyReports
 };
