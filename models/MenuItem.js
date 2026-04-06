@@ -16,21 +16,11 @@ const menuItemSchema = new mongoose.Schema({
   description: {
     type: String,
     trim: true,
-    maxlength: [500, 'Description cannot exceed 500 characters']
+    maxlength: [1000, 'Description cannot exceed 1000 characters']
   },
-  ingredients: {
-    type: String,
-    trim: true,
-    maxlength: [300, 'Ingredients cannot exceed 300 characters']
-  },
-  preparationMethod: {
-    type: String,
-    trim: true,
-    maxlength: [300, 'Preparation method cannot exceed 300 characters']
-  },
-  image: {
-    type: String,
-    default: null
+  images: {
+    type: [String],
+    default: []
   },
   price: {
     type: Number,
@@ -57,6 +47,14 @@ const menuItemSchema = new mongoose.Schema({
     trim: true,
     enum: ['Cold Beverage', 'Hot Beverage', 'Appetizers', 'Soups', 'Salads', 'Main Course', 'Sides', 'Desserts'],
     default: 'Main Course'
+  },
+  isVeg: {
+    type: Boolean,
+    default: true
+  },
+  isBestSeller: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

@@ -11,6 +11,7 @@ router.post('/login', validateLogin, authController.login);
 router.post('/logout', authController.logout);
 router.post('/refresh', authController.refresh);
 router.get('/me', protect, trackUserActivity, authController.getMe);
+router.get('/subscription', protect, authController.getSubscription);
 
 // OTP & Password Reset
 router.post('/verify-otp', authController.verifyOtp);

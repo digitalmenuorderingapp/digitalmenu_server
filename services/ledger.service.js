@@ -148,26 +148,61 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     // Create a fresh DailyLedger summary
     const ledger = await DailyLedger.getOrCreateLedger(targetDate, restaurantId);
     
-    // RESET FINANCIALS
+    // RESET all totals to 0 before accumulation to prevent duplicate/stale sums
     ledger.counter = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
     ledger.online = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
-    ledger.total = { received: 0, refunded: 0, netBalance: 0 };
+    ledger.total = { received: 0, refunded: 0, netBalance: 0, unpaidDues: 0, totalRevenue: 0 };
     ledger.counts = { totalOrders: 0, servedOrders: 0, rejectedOrders: 0, cancelledOrders: 0 };
     ledger.soldItems = [];
-    
-    // Reset hourly stats
     ledger.hourlyBreakdown.forEach(h => {
-      h.orders = 0; h.revenue = 0; h.servedOrders = 0;
+      h.orders = 0;
+      h.revenue = 0;
+      h.servedOrders = 0;
+    });
+    
+    // 4. Calculate Earned Revenue & Unpaid Dues
+    let earnedRevenue = 0;
+    let unpaidDues = 0;
+    const verifiedOrderIds = new Set(transactions.filter(t => t.type === 'PAYMENT' && t.status === 'VERIFIED').map(t => t.orderId?.toString()));
+    const orderStatusMap = new Map();
+
+    allOrders.forEach(o => {
+      const oid = o._id.toString();
+      const isVerified = verifiedOrderIds.has(oid);
+      const isServed = o.status === 'COMPLETED';
+      const isRejected = o.status === 'REJECTED' || o.status === 'CANCELLED';
+      const isUnpaid = o.paymentStatus === 'UNPAID';
+      const amt = o.totalAmount || 0;
+
+      orderStatusMap.set(oid, o.status);
+
+      if (!isRejected) {
+        if (isVerified && isServed) {
+          earnedRevenue += amt;
+        } else if (isServed && !isVerified && isUnpaid) {
+          earnedRevenue += -amt;
+        }
+
+        if (isServed && o.paymentDueStatus === 'DUE') {
+          unpaidDues += amt;
+        }
+      }
     });
 
-    // PROCESS TRANSACTIONS (Financial Truth)
+    // PROCESS TRANSACTIONS (Financial Truth from LedgerTransactions)
     transactions.forEach(tx => {
       const mode = (tx.paymentMode === 'CASH' || tx.paymentMode === 'COUNTER') ? 'counter' : 'online';
-      
+      const orderStatus = orderStatusMap.get(tx.orderId?.toString()) || 'N/A';
+      const isRejected = orderStatus === 'REJECTED' || orderStatus === 'CANCELLED';
+
       if (tx.type === 'PAYMENT') {
         ledger[mode].received += tx.amount;
-        if (tx.status === 'VERIFIED') ledger[mode].verified += tx.amount;
-        else ledger[mode].pending += tx.amount;
+        if (tx.status === 'VERIFIED') {
+          ledger[mode].verified += tx.amount;
+        } else if (!isRejected) {
+          // Awaiting Verification: only for non-rejected, non-cancelled orders
+          ledger[mode].pending += tx.amount;
+        }
       } else {
         ledger[mode].refunded += Math.abs(tx.amount);
       }
@@ -179,6 +214,8 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     ledger.total.received = ledger.counter.verified + ledger.online.verified; 
     ledger.total.refunded = ledger.counter.refunded + ledger.online.refunded;
     ledger.total.netBalance = ledger.total.received - ledger.total.refunded;
+    ledger.total.unpaidDues = unpaidDues;
+    ledger.total.totalRevenue = earnedRevenue;
 
     // PROCESS COUNTS (Operational Truth)
     allOrders.forEach(o => {

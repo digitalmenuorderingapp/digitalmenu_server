@@ -53,7 +53,7 @@ exports.sendDetailedReportEmail = async (options) => {
     }
   );
 
-  // 3. Prepare Stats for Email Template
+  // 3. Prepare Stats for Email Template (Aligned with new logic)
   const verifiedPayments = transactions
     .filter(t => t.type === 'PAYMENT' && t.status === 'VERIFIED')
     .reduce((sum, t) => sum + (t.amount || 0), 0);
@@ -63,6 +63,22 @@ exports.sendDetailedReportEmail = async (options) => {
     .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0);
 
   const netBalance = verifiedPayments - totalRefunds;
+
+  // Calculate Earned Revenue (Verified + Served)
+  const verifiedOrderIds = new Set(transactions.filter(t => t.type === 'PAYMENT' && t.status === 'VERIFIED').map(t => t.orderId?.toString()));
+  const earnedRevenue = orders.reduce((sum, o) => {
+    const isVerified = verifiedOrderIds.has(o._id.toString());
+    const isServed = o.status === 'COMPLETED';
+    const isRejected = o.status === 'REJECTED' || o.status === 'CANCELLED';
+    const isUnpaid = o.paymentStatus === 'UNPAID';
+    const amt = o.totalAmount || 0;
+
+    if (!isRejected) {
+      if (isVerified && isServed) return sum + amt;
+      if (isServed && !isVerified && isUnpaid) return sum - amt;
+    }
+    return sum;
+  }, 0);
 
   // 4. Select and Render HTML Template
   let html = '';
@@ -91,6 +107,7 @@ exports.sendDetailedReportEmail = async (options) => {
         netBalance,
         verifiedPayments,
         totalRefunds,
+        earnedRevenue,
         totalCount: transactions.length
       },
       generatedAt: timestamp

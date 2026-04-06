@@ -7,6 +7,7 @@ const { connectDB } = require('./config/db');
 const socketService = require('./services/socket.service');
 const { initCron } = require('./services/cron.service');
 const { systemMonitor } = require('./middleware/systemMonitor');
+const serverMonitor = require('./services/serverMonitor.service');
 
 dotenv.config();
 
@@ -45,6 +46,7 @@ app.set('io', io);
 app.use(express.json());
 app.use(cookieParser());
 app.use(systemMonitor);
+app.use(serverMonitor.trackRequest);
 
 // CORS configuration
 app.use(cors({
@@ -94,6 +96,7 @@ app.use('/api/ledger', require('./routes/ledger.routes'));
 app.use('/api/devices', require('./routes/devices.routes'));
 app.use('/api/public', require('./routes/public.routes'));
 app.use('/api/superadmin', require('./routes/superadmin.routes'));
+app.use('/api/server-monitoring', require('./routes/serverMonitoring.routes'));
 
 
 // Health check endpoint

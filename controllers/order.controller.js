@@ -139,6 +139,12 @@ exports.handleOrderAction = async (req, res, next) => {
         if (order.paymentMethod !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be marked for retry." });
         }
+        if (order.paymentStatus === 'VERIFIED') {
+          return res.status(400).json({ success: false, message: "Payment is already verified. Retry not needed." });
+        }
+        if (['ACCEPTED', 'REJECTED', 'CANCELLED', 'COMPLETED'].includes(order.status)) {
+          return res.status(400).json({ success: false, message: `Cannot retry payment for order in ${order.status} state.` });
+        }
         if ((order.retryCount || 0) >= 3) {
           return res.status(400).json({ success: false, message: "Max retry limit (3) reached. Please mark as UNPAID." });
         }
@@ -149,6 +155,7 @@ exports.handleOrderAction = async (req, res, next) => {
 
       case "MARK_UNPAID":
         update.paymentStatus = "UNPAID";
+        update.unpaidReason = payload.reason || "Payment not received";
         if (!["COMPLETED", "REJECTED"].includes(order.status)) {
           update.status = "REJECTED";
           update.rejectionReason = payload.reason || "Payment not received";
@@ -473,6 +480,7 @@ exports.getAllOrders = async (req, res, next) => {
           totalOrders: { $sum: 1 },
           placed: { $sum: { $cond: [{ $eq: ['$status', 'PLACED'] }, 1, 0] } },
           accepted: { $sum: { $cond: [{ $eq: ['$status', 'ACCEPTED'] }, 1, 0] } },
+          servingPending: { $sum: { $cond: [{ $in: ['$status', ['PLACED', 'ACCEPTED']] }, 1, 0] } },
           completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
           rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
           cancelled: { $sum: { $cond: [{ $eq: ['$status', 'CANCELLED'] }, 1, 0] } },
@@ -504,6 +512,19 @@ exports.getAllOrders = async (req, res, next) => {
               ]
             }
           },
+          onlinePendingAmount: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentMethod', 'ONLINE'] },
+                  { $eq: ['$paymentStatus', 'PENDING'] },
+                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
+                ]},
+                '$totalAmount',
+                0
+              ]
+            }
+          },
           counterPending: {
             $sum: {
               $cond: [
@@ -513,6 +534,31 @@ exports.getAllOrders = async (req, res, next) => {
                   { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
                 ]},
                 1,
+                0
+              ]
+            }
+          },
+          counterPendingAmount: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentMethod', 'COUNTER'] },
+                  { $eq: ['$paymentStatus', 'PENDING'] },
+                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
+                ]},
+                '$totalAmount',
+                0
+              ]
+            }
+          },
+          unpaidDuesAmount: {
+            $sum: {
+              $cond: [
+                { $and: [
+                  { $eq: ['$paymentDueStatus', 'DUE'] },
+                  { $eq: ['$status', 'COMPLETED'] }
+                ]},
+                '$totalAmount',
                 0
               ]
             }
@@ -560,6 +606,7 @@ exports.getAllOrders = async (req, res, next) => {
     const [statsResult] = await Order.aggregate(statsPipeline);
     const stats = statsResult || {
       totalOrders: 0, placed: 0, accepted: 0, completed: 0, rejected: 0, cancelled: 0,
+      servingPending: 0,
       totalRevenue: 0, onlinePending: 0, counterPending: 0, totalRefunds: 0, totalRefundAmount: 0,
       counterGross: 0, counterRefunded: 0, onlineGross: 0, onlineRefunded: 0
     };
@@ -900,7 +947,12 @@ exports.retryPayment = async (req, res, next) => {
 
     // Update payment details
     if (paymentMethod) order.paymentMethod = paymentMethod;
-    if (utr) order.utr = utr.substring(0, 6);
+    if (paymentMethod === 'ONLINE') {
+      if (!utr || utr.length < 6) {
+        return res.status(400).json({ success: false, message: 'Valid 6-digit UTR is mandatory for online payments.' });
+      }
+      order.utr = utr.substring(0, 6);
+    }
     
     order.paymentStatus = 'PENDING';
     order.retryCount = (order.retryCount || 0) + 1;

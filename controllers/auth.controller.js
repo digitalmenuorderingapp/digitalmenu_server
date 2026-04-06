@@ -4,6 +4,7 @@ const Order = require('../models/Order');
 const DailyLedger = require('../models/DailyLedger');
 const LedgerTransaction = require('../models/LedgerTransaction');
 const MenuItem = require('../models/MenuItem');
+const Table = require('../models/Table');
 const ExcelJS = require('exceljs');
 const { hashToken } = require('../utils/token');
 const emailService = require('../services/email.service');
@@ -44,6 +45,39 @@ const accessCookieOptions = {
   secure: isProduction,
   sameSite: isProduction ? 'none' : 'lax',
   maxAge: 15 * 60 * 1000 // 15 minutes
+};
+
+// Helper: Check and update subscription status
+const checkSubscriptionStatus = async (user) => {
+  if (!user.subscription || !user.subscription.expiryDate) {
+    if (user.subscription && user.subscription.type === 'free') {
+      return { ...user.subscription.toObject(), daysLeft: 9999 };
+    }
+    return { ...user.subscription?.toObject(), daysLeft: 0 };
+  }
+
+  const now = new Date();
+  const expiry = new Date(user.subscription.expiryDate);
+  const diffTime = expiry.getTime() - now.getTime();
+  const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  let hasChanged = false;
+  if (daysLeft <= 0 && user.subscription.status !== 'expired') {
+    user.subscription.status = 'expired';
+    hasChanged = true;
+  } else if (daysLeft > 0 && user.subscription.status === 'expired') {
+    user.subscription.status = 'active';
+    hasChanged = true;
+  }
+
+  if (hasChanged) {
+    await user.save();
+  }
+
+  return {
+    ...user.subscription.toObject(),
+    daysLeft: Math.max(0, daysLeft)
+  };
 };
 
 // Register (Now sends OTP)
@@ -138,6 +172,7 @@ exports.verifyOtp = async (req, res, next) => {
     const trialDays = 90;
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + trialDays);
+    expiryDate.setHours(23, 59, 59, 999);
 
     user.isVerified = true;
     user.shortId = shortId;
@@ -197,10 +232,10 @@ exports.verifyOtp = async (req, res, next) => {
         ownerName: user.ownerName,
         address: user.address,
         phone: user.phone,
-        description: user.description,
+        motto: user.motto,
         logo: user.logo,
         shortId: user.shortId,
-        subscription: user.subscription
+        subscription: await checkSubscriptionStatus(user)
       }
     });
   } catch (error) {
@@ -306,10 +341,10 @@ exports.login = async (req, res, next) => {
         ownerName: user.ownerName,
         address: user.address,
         phone: user.phone,
-        description: user.description,
+        motto: user.motto,
         logo: user.logo,
         shortId: user.shortId,
-        subscription: user.subscription
+        subscription: await checkSubscriptionStatus(user)
       }
     });
   } catch (error) {
@@ -459,9 +494,36 @@ exports.getMe = async (req, res, next) => {
       });
     }
 
+    const subData = await checkSubscriptionStatus(user);
+
     res.json({
       success: true,
-      user
+      user: {
+        ...user.toObject(),
+        subscription: subData
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get subscription status only
+exports.getSubscription = async (req, res, next) => {
+  try {
+    const user = await RestaurantAdmin.findById(req.userId).select('subscription status');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const subData = await checkSubscriptionStatus(user);
+
+    res.json({
+      success: true,
+      subscription: subData
     });
   } catch (error) {
     next(error);
@@ -618,11 +680,11 @@ exports.resendOtp = async (req, res, next) => {
 // Update restaurant details
 exports.updateRestaurant = async (req, res, next) => {
   try {
-    const { restaurantName, ownerName, address, phone, description } = req.body;
+    const { restaurantName, ownerName, address, phone, motto } = req.body;
 
     const user = await RestaurantAdmin.findByIdAndUpdate(
       req.userId,
-      { restaurantName, ownerName, address, phone, description },
+      { restaurantName, ownerName, address, phone, motto },
       { new: true, runValidators: true }
     ).select('-password -refreshTokens');
 
@@ -863,6 +925,7 @@ exports.deleteAccount = async (req, res, next) => {
       DailyLedger.deleteMany({ restaurant: userId }),
       LedgerTransaction.deleteMany({ restaurant: userId }),
       MenuItem.deleteMany({ restaurant: userId }),
+      Table.deleteMany({ restaurant: userId }), // Delete restaurant tables
       RestaurantAdmin.findByIdAndDelete(userId)
     ]);
 

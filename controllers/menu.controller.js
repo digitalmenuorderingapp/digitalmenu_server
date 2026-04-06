@@ -72,26 +72,27 @@ exports.getMenuItem = async (req, res, next) => {
 // Create menu item
 exports.createMenuItem = async (req, res, next) => {
   try {
-    const { name, description, ingredients, preparationMethod, price, offerPrice, foodType } = req.body;
+    const { name, description, price, offerPrice, foodType } = req.body;
     
-    let imageUrl = null;
+    let imageUrls = [];
     
-    // Upload image if provided
-    if (req.file) {
-      const result = await uploadToCloudinary(req.file.buffer);
-      imageUrl = result.secure_url;
+    // Upload images if provided
+    if (req.files && req.files.length > 0) {
+      const uploadPromises = req.files.map(file => uploadToCloudinary(file.buffer));
+      const results = await Promise.all(uploadPromises);
+      imageUrls = results.map(result => result.secure_url);
     }
     
     const menuItem = await MenuItem.create({
       restaurant: req.userId,
       name,
       description,
-      ingredients,
-      preparationMethod,
       price: parseFloat(price),
       offerPrice: offerPrice ? parseFloat(offerPrice) : null,
-      image: imageUrl,
-      foodType: foodType || 'Main Course'
+      images: imageUrls,
+      foodType: foodType || 'Main Course',
+      isVeg: req.body.isVeg === 'true',
+      isBestSeller: req.body.isBestSeller === 'true'
     });
     
     // Emit real-time menu update to restaurant customers
@@ -116,7 +117,7 @@ exports.createMenuItem = async (req, res, next) => {
 exports.updateMenuItem = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, description, ingredients, preparationMethod, price, offerPrice, isActive, foodType } = req.body;
+    const { name, description, price, offerPrice, isActive, foodType, removedImages } = req.body;
     
     const menuItem = await MenuItem.findOne({ _id: id, restaurant: req.userId });
     
@@ -127,29 +128,37 @@ exports.updateMenuItem = async (req, res, next) => {
       });
     }
     
-    // Upload new image if provided
-    if (req.file) {
-      // Delete old image from Cloudinary
-      if (menuItem.image) {
-        const publicId = extractPublicId(menuItem.image);
-        if (publicId) {
-          await deleteFromCloudinary(publicId);
+    // Handle removed images
+    if (removedImages) {
+      const removedList = Array.isArray(removedImages) ? removedImages : [removedImages];
+      for (const imgUrl of removedList) {
+        if (menuItem.images.includes(imgUrl)) {
+          const publicId = extractPublicId(imgUrl);
+          if (publicId) {
+            await deleteFromCloudinary(publicId);
+          }
+          menuItem.images = menuItem.images.filter(url => url !== imgUrl);
         }
       }
-      
-      const result = await uploadToCloudinary(req.file.buffer);
-      menuItem.image = result.secure_url;
+    }
+
+    // Upload new images if provided
+    if (req.files && req.files.length > 0) {
+      const uploadPromises = req.files.map(file => uploadToCloudinary(file.buffer));
+      const results = await Promise.all(uploadPromises);
+      const newUrls = results.map(result => result.secure_url);
+      menuItem.images = [...menuItem.images, ...newUrls];
     }
     
     // Update fields
     if (name !== undefined) menuItem.name = name;
     if (description !== undefined) menuItem.description = description;
-    if (ingredients !== undefined) menuItem.ingredients = ingredients;
-    if (preparationMethod !== undefined) menuItem.preparationMethod = preparationMethod;
     if (price !== undefined) menuItem.price = parseFloat(price);
     if (offerPrice !== undefined) menuItem.offerPrice = offerPrice ? parseFloat(offerPrice) : null;
     if (isActive !== undefined) menuItem.isActive = isActive;
     if (foodType !== undefined) menuItem.foodType = foodType;
+    if (req.body.isVeg !== undefined) menuItem.isVeg = req.body.isVeg === 'true';
+    if (req.body.isBestSeller !== undefined) menuItem.isBestSeller = req.body.isBestSeller === 'true';
     
     await menuItem.save();
     
@@ -184,11 +193,13 @@ exports.deleteMenuItem = async (req, res, next) => {
       });
     }
     
-    // Delete image from Cloudinary
-    if (menuItem.image) {
-      const publicId = extractPublicId(menuItem.image);
-      if (publicId) {
-        await deleteFromCloudinary(publicId);
+    // Delete images from Cloudinary
+    if (menuItem.images && menuItem.images.length > 0) {
+      for (const imageUrl of menuItem.images) {
+        const publicId = extractPublicId(imageUrl);
+        if (publicId) {
+          await deleteFromCloudinary(publicId);
+        }
       }
     }
     

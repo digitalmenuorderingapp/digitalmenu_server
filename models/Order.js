@@ -200,6 +200,7 @@ const orderSchema = new mongoose.Schema({
   // Rejection & Cancellation (Kept for business logic)
   rejectionReason: String,
   cancellationReason: String,
+  unpaidReason: String,
 
   // Customer Feedback
   feedback: {

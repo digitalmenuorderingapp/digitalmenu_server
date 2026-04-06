@@ -795,12 +795,50 @@ const getCloudinaryStats = async (req, res) => {
     console.error('Cloudinary stats error:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch Cloudinary stats',
-      cloudinary: {
-        status: 'error',
-        error: error.message
-      }
+      message: 'Failed to fetch Cloudinary stats'
     });
+  }
+};
+
+/**
+ * Manually trigger monthly reports for all or selected restaurants.
+ * Only allowed between the 1st and 5th of the month.
+ */
+const triggerMonthlyReports = async (req, res) => {
+  try {
+    const { restaurantIds } = req.body; // Array of IDs or empty for all
+    const { processMonthlyReports } = require('../utils/monthEndManager');
+
+    // Safety check: Only between 1st and 5th
+    const day = new Date().getDate();
+    if (day > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Monthly reports can only be re-triggered between the 1st and 5th of the month before data is purged.'
+      });
+    }
+
+    // Run in background to prevent timeout
+    processMonthlyReports(restaurantIds).catch(err => 
+      console.error('[Superadmin] Background report trigger failed:', err)
+    );
+
+    await logActivity({
+      type: 'management',
+      action: `Triggered manual monthly reports for ${restaurantIds?.length > 0 ? restaurantIds.length + ' selected' : 'all'} restaurants`,
+      user: req.user.email,
+      req
+    });
+
+    res.json({
+      success: true,
+      message: restaurantIds?.length > 0
+        ? `Triggered reports for ${restaurantIds.length} selected restaurants.`
+        : 'Triggered monthly reports for all restaurants.'
+    });
+  } catch (error) {
+    console.error('Trigger monthly reports error:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
 
@@ -820,5 +858,6 @@ module.exports = {
   logout,
   getAuditLogs,
   getMe,
-  getCloudinaryStats
+  getCloudinaryStats,
+  triggerMonthlyReports
 };

@@ -20,7 +20,7 @@ exports.getRestaurantDetails = async (req, res) => {
 
     // Find restaurant by ID (lean for speed)
     const restaurant = await RestaurantAdmin.findById(id)
-      .select('restaurantName ownerName email address phone description logo')
+      .select('restaurantName ownerName email address phone motto logo')
       .lean();
 
     if (!restaurant) {
@@ -40,7 +40,7 @@ exports.getRestaurantDetails = async (req, res) => {
         email: restaurant.email,
         address: restaurant.address,
         phone: restaurant.phone,
-        description: restaurant.description,
+        motto: restaurant.motto,
         logo: restaurant.logo
       }
     });
@@ -73,7 +73,7 @@ exports.getPublicMenu = async (req, res) => {
     // Run queries in parallel for speed
     const [restaurant, menuItems, tableDoc] = await Promise.all([
       RestaurantAdmin.findById(restaurantId)
-        .select('restaurantName ownerName logo')
+        .select('restaurantName ownerName logo motto')
         .lean(),
       MenuItem.find({ 
         restaurant: restaurantId,
@@ -109,7 +109,8 @@ exports.getPublicMenu = async (req, res) => {
           id: restaurant._id,
           restaurantName: restaurant.restaurantName || 'Restaurant',
           ownerName: restaurant.ownerName,
-          logo: restaurant.logo
+          logo: restaurant.logo,
+          motto: restaurant.motto
         },
         tableNumber: table,
         tableCapacity: tableDoc?.seats || 8,

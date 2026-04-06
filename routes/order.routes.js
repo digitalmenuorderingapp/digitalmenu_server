@@ -14,6 +14,7 @@ router.get('/public/:id', orderController.getOrderByIdPublic);
 router.post('/public/:id/feedback', orderController.submitFeedback);
 router.put('/:id/feedback', orderController.submitFeedback);
 router.put('/device/profile', orderController.updateCustomerProfile); // Update customer profile on orders
+router.put('/:id/retry-payment', orderController.retryPayment);
 
 // Customer cancel route (public with deviceId verification)
 router.put('/:id/cancel', orderController.cancelOrder);

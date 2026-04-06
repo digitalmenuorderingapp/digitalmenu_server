@@ -17,8 +17,8 @@ router.use(protect, trackUserActivity);
 router.get('/admin/all', menuController.getAllMenuItems);
 
 // CRUD
-router.post('/', upload.single('image'), menuController.createMenuItem);
-router.put('/:id', upload.single('image'), menuController.updateMenuItem);
+router.post('/', upload.array('images', 5), menuController.createMenuItem);
+router.put('/:id', upload.array('images', 5), menuController.updateMenuItem);
 router.delete('/:id', menuController.deleteMenuItem);
 
 // Status Toggles

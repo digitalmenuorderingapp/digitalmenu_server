@@ -81,7 +81,7 @@ const restaurantAdminSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  description: {
+  motto: {
     type: String,
     default: ''
   },

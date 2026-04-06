@@ -32,7 +32,9 @@ const dailyLedgerSchema = new mongoose.Schema({
   total: {
     received: { type: Number, default: 0 },
     refunded: { type: Number, default: 0 },
-    netBalance: { type: Number, default: 0 }
+    netBalance: { type: Number, default: 0 },
+    unpaidDues: { type: Number, default: 0 },
+    totalRevenue: { type: Number, default: 0 }
   },
 
   // Operational Stats

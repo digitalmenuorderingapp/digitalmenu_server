@@ -2,123 +2,107 @@ const RestaurantAdmin = require('../models/RestaurantAdmin');
 const DailyLedger = require('../models/DailyLedger');
 const Order = require('../models/Order');
 const LedgerTransaction = require('../models/LedgerTransaction');
-const ReportService = require('../services/report.service');
-const emailService = require('../services/email.service');
 const moment = require('moment-timezone');
 
 /**
- * Core logic for processing end-of-month reports and data purging.
- * Updated to use new detailed report format with merged Order + LedgerTransaction data.
+ * Utility to pause execution between tasks to prevent CPU spikes.
  */
-const processEndOfMonth = async () => {
-  try {
-    const restaurants = await RestaurantAdmin.find({});
-    const now = moment().tz('Asia/Kolkata');
-    
-    // Calculate last month details
-    const lastMonth = now.clone().subtract(1, 'month');
-    const monthName = lastMonth.format('MMMM');
-    const year = lastMonth.year();
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    const monthStart = lastMonth.clone().startOf('month').toDate();
-    const monthEnd = lastMonth.clone().endOf('month').toDate();
-    const currentMonthStart = now.clone().startOf('month').toDate();
-
-    console.log(`Starting month-end processing for ${monthName} ${year}...`);
-
-    for (const restaurant of restaurants) {
-      try {
-        // 1. Fetch last month's data (LedgerTransactions and Orders)
-        const transactions = await LedgerTransaction.find({
-          restaurant: restaurant._id,
-          transactionDate: { $gte: monthStart, $lte: monthEnd }
-        }).sort({ transactionDate: 1 }).lean();
-
-        if (transactions.length === 0) {
-          console.log(`Skipping restaurant ${restaurant.restaurantName}: No data for ${monthName}`);
-          continue;
-        }
-
-        // Get unique order IDs from transactions
-        const orderIds = [...new Set(transactions.map(t => t.orderId?.toString()).filter(Boolean))];
-
-        // Fetch all related orders
-        const orders = await Order.find({
-          _id: { $in: orderIds }
-        }).lean();
-
-        // Aggregate summary from DailyLedger for email template
-        const dailyLedgers = await DailyLedger.find({
-          restaurant: restaurant._id,
-          date: { $gte: monthStart, $lte: monthEnd }
-        }).sort({ date: 1 });
-
-        const summary = dailyLedgers.reduce((acc, curr) => {
-          acc.totalOrders += curr.counts.totalOrders || 0;
-          acc.servedOrders += curr.counts.servedOrders || 0;
-          acc.amountReceivedCash += curr.cash.verified || 0;
-          acc.amountReceivedOnline += curr.online.verified || 0;
-          acc.totalAmountReceived += (curr.cash.verified + curr.online.verified) || 0;
-          acc.refundedAmount += curr.total.refunded || 0;
-          acc.totalRefunds += (curr.counts.rejectedOrders + curr.counts.cancelledOrders) || 0;
-          return acc;
-        }, {
-          totalOrders: 0,
-          servedOrders: 0,
-          totalAmountReceived: 0,
-          amountReceivedCash: 0,
-          amountReceivedOnline: 0,
-          refundedAmount: 0,
-          totalRefunds: 0
-        });
-
-        // 2. Send email using the unified reportHelper
-        const { sendDetailedReportEmail } = require('../utils/reportHelper');
-        const dateRange = {
-          from: moment(monthStart).tz('Asia/Kolkata').format('YYYY-MM-DD'),
-          to: moment(monthEnd).tz('Asia/Kolkata').format('YYYY-MM-DD'),
-          fromDate: monthStart,
-          toDate: monthEnd
-        };
-
-        const subject = `${restaurant.restaurantName || 'Restaurant'} - Monthly Detailed Report - ${monthName} ${year}`;
+/**
+ * Step 1: Generate and email monthly reports for all restaurants.
+ * Scheduled for the 1st of every month. Can also be triggered manually for specific IDs.
+ */
+const processMonthlyReports = async (restaurantIds = []) => {
+    try {
+        const query = restaurantIds.length > 0 ? { _id: { $in: restaurantIds } } : {};
+        const restaurants = await RestaurantAdmin.find(query);
+        const now = moment().tz('Asia/Kolkata');
         
-        await sendDetailedReportEmail({
-          restaurant,
-          emailType: 'MONTHLY',
-          dateRange,
-          subject
-        });
+        // Calculate last month details
+        const lastMonth = now.clone().subtract(1, 'month');
+        const monthName = lastMonth.format('MMMM');
+        const year = lastMonth.year();
 
-        console.log(`Monthly report sent to: ${restaurant.restaurantName} (${restaurant.email})`);
+        const monthStart = lastMonth.clone().startOf('month').toDate();
+        const monthEnd = lastMonth.clone().endOf('month').toDate();
 
-        // 4. Purge old data (Keep only current month and onwards for high-speed operation)
-        await Promise.all([
-          DailyLedger.deleteMany({
-            restaurant: restaurant._id,
-            date: { $lt: currentMonthStart }
-          }),
-          LedgerTransaction.deleteMany({
-            restaurant: restaurant._id,
-            transactionDate: { $lt: currentMonthStart }
-          }),
-          Order.deleteMany({
-            restaurant: restaurant._id,
-            createdAt: { $lt: currentMonthStart }
-          })
+        console.log(`[MonthEnd] Starting monthly report generation for ${monthName} ${year}...`);
+
+        for (const restaurant of restaurants) {
+            try {
+                // 1. Check if restaurant had any activity last month
+                const transactionsCount = await LedgerTransaction.countDocuments({
+                    restaurant: restaurant._id,
+                    transactionDate: { $gte: monthStart, $lte: monthEnd }
+                });
+
+                if (transactionsCount === 0) {
+                    // console.log(`[MonthEnd] Skipping ${restaurant.restaurantName}: No data for ${monthName}`);
+                    continue;
+                }
+
+                // 2. Trigger the unified report email logic (Generates Excel & Sends Email)
+                const { sendDetailedReportEmail } = require('./reportHelper');
+                const dateRange = {
+                    from: moment(monthStart).tz('Asia/Kolkata').format('YYYY-MM-DD'),
+                    to: moment(monthEnd).tz('Asia/Kolkata').format('YYYY-MM-DD'),
+                    fromDate: monthStart,
+                    toDate: monthEnd
+                };
+
+                const subject = `${restaurant.restaurantName || 'Restaurant'} - Monthly Detailed Report - ${monthName} ${year}`;
+                
+                await sendDetailedReportEmail({
+                    restaurant,
+                    emailType: 'MONTHLY',
+                    dateRange,
+                    subject
+                });
+
+                console.log(`[MonthEnd] Report sent to: ${restaurant.restaurantName} (${restaurant.email})`);
+
+                // 3. STAGGERED EXECUTION: Sleep for 5 seconds between each restaurant to prevent CPU spike
+                await sleep(5000);
+
+            } catch (restaurantError) {
+                console.error(`[MonthEnd] Error processing report for ${restaurant.restaurantName || restaurant.email}:`, restaurantError);
+            }
+        }
+        console.log(`[MonthEnd] Monthly reports processing completed.`);
+    } catch (error) {
+        console.error('[MonthEnd] Critical error in monthly reports processing:', error);
+        throw error;
+    }
+};
+
+/**
+ * Step 2: Purge historical data that is older than the current month.
+ * Scheduled for the 6th of every month (5 days after the 1st) for safety.
+ */
+const purgeAllOldData = async () => {
+    try {
+        const now = moment().tz('Asia/Kolkata');
+        const currentMonthStart = now.clone().startOf('month').toDate();
+        
+        console.log(`[MonthEnd] Starting global data purge (clearing data before ${moment(currentMonthStart).format('YYYY-MM-DD')})...`);
+
+        // We purge in segments to prevent long-locking the DB
+        const result = await Promise.all([
+            DailyLedger.deleteMany({ date: { $lt: currentMonthStart } }),
+            LedgerTransaction.deleteMany({ transactionDate: { $lt: currentMonthStart } }),
+            Order.deleteMany({ createdAt: { $lt: currentMonthStart } })
         ]);
 
-        console.log(`Successfully processed month-end for: ${restaurant.restaurantName}`);
-      } catch (restaurantError) {
-        console.error(`Error processing month-end for ${restaurant.restaurantName || restaurant.email}:`, restaurantError);
-      }
+        console.log(`[MonthEnd] Purge completed successfully.`);
+        console.log(`[MonthEnd] Stats: Ledgers deleted: ${result[0].deletedCount}, Transactions: ${result[1].deletedCount}, Orders: ${result[2].deletedCount}`);
+    } catch (error) {
+        console.error('[MonthEnd] Critical error in data purge processing:', error);
+        throw error;
     }
-  } catch (error) {
-    console.error('Critical error in end-of-month processing:', error);
-    throw error;
-  }
 };
 
 module.exports = {
-  processEndOfMonth
+    processMonthlyReports,
+    purgeAllOldData
 };

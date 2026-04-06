@@ -20,14 +20,18 @@ exports.detailedReportEmailTemplate = ({ ownerName, restaurantName, month, dateR
         <li><strong>Payment Summary</strong> - Payment status breakdown</li>
       </ul>
 
-      <h3 style="color: #4F46E5; margin-top: 24px;">Summary (Verified)</h3>
+      <h3 style="color: #4F46E5; margin-top: 24px;">Summary Overview</h3>
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
         <tr style="background: #f3f4f6;">
-          <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Net Balance</strong></td>
+          <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Total Earned Revenue</strong></td>
+          <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #4F46E5; font-weight: bold;">₹${summary.earnedRevenue.toFixed(2)}</td>
+        </tr>
+        <tr>
+          <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Net Settled Balance</strong></td>
           <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #059669; font-weight: bold;">₹${summary.netBalance.toFixed(2)}</td>
         </tr>
         <tr>
-          <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Total Verified Payments</strong></td>
+          <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Verified Payments (Gross)</strong></td>
           <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right;">₹${summary.verifiedPayments.toFixed(2)}</td>
         </tr>
         <tr style="background: #f3f4f6;">
