@@ -66,7 +66,7 @@ connectDB().then(() => {
   const { emitServiceStatus } = require('./controllers/superadmin.controller');
   setInterval(() => {
     emitServiceStatus(io);
-  }, 30000);
+  }, 10000);
 });
 
 // Scheduled task to mark inactive devices offline

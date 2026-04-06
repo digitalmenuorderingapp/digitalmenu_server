@@ -37,10 +37,10 @@ class ServerMonitor {
       this.saveDailyStats();
     }, 60 * 60 * 1000); // Check every hour
 
-    // System resource monitoring every 30 seconds
+    // System resource monitoring every 5 seconds for real-time dashboard
     setInterval(() => {
       this.collectSystemMetrics();
-    }, 30000);
+    }, 5000);
 
     // Initial system metrics collection
     this.collectSystemMetrics();

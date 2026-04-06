@@ -4,7 +4,6 @@ const {
   requestOTP, 
   verifyOTP, 
   autoLogin,
-  getSystemStats,
   getRestaurants,
   getRestaurantDetail,
   updateRestaurantStatus,
@@ -12,11 +11,9 @@ const {
   refreshSuperadminToken,
   logout,
   getMe,
-  getCloudinaryStats,
-  getMongoStats,
-  triggerMonthlyReports,
-  getAuditLogs
+  triggerMonthlyReports
 } = require('../controllers/superadmin.controller');
+const { getCurrentStats } = require('../controllers/serverMonitoring.controller');
 const { superadminProtect } = require('../middleware/superadmin.middleware');
 
 // Public superadmin routes
@@ -28,14 +25,11 @@ router.post('/logout', logout);
 
 // Protected superadmin routes
 router.get('/me', superadminProtect, getMe);
-router.get('/system-stats', superadminProtect, getSystemStats);
+router.get('/current-stats', superadminProtect, getCurrentStats); // Better consolidated metrics
 router.get('/restaurants', superadminProtect, getRestaurants);
 router.get('/restaurant/:id', superadminProtect, getRestaurantDetail);
 router.patch('/restaurants/:restaurantId/status', superadminProtect, updateRestaurantStatus);
 router.patch('/restaurants/:restaurantId/subscription', superadminProtect, updateSubscription);
-router.get('/cloudinary-stats', superadminProtect, getCloudinaryStats);
-router.get('/mongo-stats', superadminProtect, getMongoStats);
 router.post('/trigger-monthly-reports', superadminProtect, triggerMonthlyReports);
-router.get('/logs', superadminProtect, getAuditLogs);
 
 module.exports = router;

@@ -11,38 +11,6 @@ const { getMetrics } = require('../middleware/systemMonitor');
 const mongoose = require('mongoose');
 const MenuItem = require('../models/MenuItem');
 
-// In-memory telemetry loops to replace dummy chart data
-const systemMetricsHistory = [];
-const platformThroughputHistory = [];
-let lastLogCount = 0;
-
-setInterval(async () => {
-  try {
-    const metrics = await getMetrics();
-    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-    systemMetricsHistory.push({
-      time: timeStr,
-      cpu: metrics.cpuUsage || 0,
-      mem: metrics.memoryUsage ? (metrics.memoryUsage.heapUsed / 1024 / 1024) : 0
-    });
-    if (systemMetricsHistory.length > 60) systemMetricsHistory.shift();
-
-    // Calculate a light throughput metric by checking DB action shifts
-    const currentLogs = await AuditLog.countDocuments();
-    const requestsSinceLast = Math.max(0, currentLogs - lastLogCount);
-    if (lastLogCount === 0) { lastLogCount = currentLogs; } else { lastLogCount = currentLogs; }
-
-    platformThroughputHistory.push({
-      time: timeStr,
-      requests: requestsSinceLast
-    });
-    if (platformThroughputHistory.length > 60) platformThroughputHistory.shift();
-
-  } catch (e) {
-    // Silent fail for background telemetry
-  }
-}, 5000);
 
 // In-memory OTP storage for superadmin (sahin401099@gmail.com)
 // Structured as { email: { otp, expires } }
@@ -211,33 +179,6 @@ const verifyOTP = async (req, res) => {
   }
 };
 
-/**
- * Get Real-time System Metrics
- */
-const getSystemStats = async (req, res) => {
-  try {
-    const metrics = await getMetrics();
-    const dbSize = await mongoose.connection.db.stats();
-
-    // Active counts
-    const activeSocketCount = req.app.get('io') ? req.app.get('io').engine.clientsCount : 0;
-
-    res.json({
-      success: true,
-      metrics: {
-        ...metrics,
-        dbSize: dbSize.storageSize,
-        dataSize: dbSize.dataSize,
-        activeSockets: activeSocketCount,
-        history: systemMetricsHistory,
-        throughputData: platformThroughputHistory
-      }
-    });
-  } catch (error) {
-    console.error('Get system stats error:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-};
 
 /**
  * Emit real-time service status to superadmin via socket.io
@@ -809,7 +750,6 @@ module.exports = {
   requestOTP,
   verifyOTP,
   autoLogin,
-  getSystemStats,
   emitServiceStatus,
   getRestaurants,
   getRestaurantDetail,
