@@ -7,7 +7,11 @@ const RestaurantAdmin = require('../models/RestaurantAdmin');
 
 // Helper to attach transactions to a single order
 const getEnrichedOrder = async (order) => {
-  return order.toObject({ virtuals: true });
+  // Handle both Mongoose documents (have toObject) and plain objects from .lean()
+  if (order.toObject) {
+    return order.toObject({ virtuals: true });
+  }
+  return order; // Already a plain object from .lean()
 };
 
 // Create order - Optimized for speed
