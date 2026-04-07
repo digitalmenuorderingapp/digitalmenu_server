@@ -11,7 +11,7 @@ const getTransporter = () => {
       secure: process.env.SMTP_SECURE === 'true',
       auth: {
         user: process.env.SMTP_USER,
-        pass: process.SMTP_PASS,
+        pass: process.env.SMTP_PASS,
       },
       connectionTimeout: 10000, // 10 second timeout
       socketTimeout: 10000,
