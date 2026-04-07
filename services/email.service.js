@@ -11,8 +11,11 @@ const getTransporter = () => {
       secure: process.env.SMTP_SECURE === 'true',
       auth: {
         user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+        pass: process.SMTP_PASS,
       },
+      connectionTimeout: 10000, // 10 second timeout
+      socketTimeout: 10000,
+      greetingTimeout: 10000,
     });
   }
   return transporter;
@@ -20,6 +23,12 @@ const getTransporter = () => {
 
 exports.sendEmailWithAttachments = async (to, subject, text, attachments, html = '') => {
   try {
+    // Skip if SMTP not configured
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
+      console.log('[Email] SMTP not configured, skipping email to:', to);
+      return { skipped: true, reason: 'SMTP not configured' };
+    }
+
     const mailOptions = {
       from: `"DigitalMenu Reports" <${process.env.SMTP_USER}>`,
       to,
@@ -33,8 +42,9 @@ exports.sendEmailWithAttachments = async (to, subject, text, attachments, html =
     console.log('Message sent: %s', info.messageId);
     return info;
   } catch (error) {
-    console.error('Error sending email:', error);
-    throw error;
+    console.error('[Email] Failed to send email:', error.message);
+    // Don't throw - gracefully fail so app continues
+    return { error: error.message, sent: false };
   }
 };
 
@@ -44,6 +54,12 @@ exports.sendEmailWithAttachments = async (to, subject, text, attachments, html =
  */
 exports.sendEmail = async ({ to, subject, html }) => {
   try {
+    // Skip if SMTP not configured
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
+      console.log('[Email] SMTP not configured, skipping email to:', to);
+      return { skipped: true, reason: 'SMTP not configured' };
+    }
+
     const mailOptions = {
       from: process.env.SMTP_USER,
       to,
@@ -55,7 +71,8 @@ exports.sendEmail = async ({ to, subject, html }) => {
     console.log('Email sent successfully to:', to);
     return info;
   } catch (error) {
-    console.error('Error sending email:', error);
-    throw error;
+    console.error('[Email] Failed to send email:', error.message);
+    // Don't throw - gracefully fail so app continues
+    return { error: error.message, sent: false };
   }
 };
