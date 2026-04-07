@@ -2,7 +2,6 @@ const jwt = require('jsonwebtoken');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const Order = require('../models/Order');
 const DailyLedger = require('../models/DailyLedger');
-const LedgerTransaction = require('../models/LedgerTransaction');
 const MenuItem = require('../models/MenuItem');
 const Table = require('../models/Table');
 const ExcelJS = require('exceljs');
@@ -844,17 +843,9 @@ exports.deleteAccount = async (req, res, next) => {
     const ReportService = require('../services/report.service');
     const moment = require('moment-timezone');
 
-    // Fetch all user data for full export
-    const transactions = await LedgerTransaction.find({ restaurant: userId })
-      .sort({ transactionDate: 1 })
-      .lean();
-
-    // Get unique order IDs from transactions
-    const orderIds = [...new Set(transactions.map(t => t.orderId?.toString()).filter(Boolean))];
-
     // Fetch all related orders
     const orders = await Order.find({
-      _id: { $in: orderIds }
+      restaurant: userId
     }).lean();
 
     // Get menu items for additional sheet and image deletion
@@ -873,9 +864,9 @@ exports.deleteAccount = async (req, res, next) => {
           }
         } catch (imgError) {
           console.error(`[DeleteAccount] Failed to delete image for item ${item._id}:`, imgError.message);
-          // Continue with deletion even if image deletion fails
         }
       });
+    
     // Delete restaurant logo from Cloudinary if exists
     if (user.logo && user.logo.includes('cloudinary.com')) {
       try {
@@ -891,29 +882,12 @@ exports.deleteAccount = async (req, res, next) => {
 
     await Promise.allSettled(imageDeletePromises);
 
-    // Determine date range for the report
-    let dateRange;
-    if (transactions.length > 0) {
-      const firstTx = transactions[0];
-      const lastTx = transactions[transactions.length - 1];
-      dateRange = {
-        from: moment(firstTx.transactionDate).tz('Asia/Kolkata').format('YYYY-MM-DD'),
-        to: moment(lastTx.transactionDate).tz('Asia/Kolkata').format('YYYY-MM-DD')
-      };
-    } else {
-      dateRange = {
-        from: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
-        to: moment().tz('Asia/Kolkata').format('YYYY-MM-DD')
-      };
-    }
-
-    // Send unified report via helper (which now handles Menu Items automatically)
-    const { sendDetailedReportEmail } = require('../utils/reportHelper');
-    const oldestTx = transactions[0];
+    // Send unified report via helper
+    const oldestOrder = await Order.findOne({ restaurant: userId }).sort({ createdAt: 1 });
     const reportDateRange = {
-      from: oldestTx ? moment(oldestTx.transactionDate).tz('Asia/Kolkata').format('YYYY-MM-DD') : moment().format('YYYY-MM-DD'),
+      from: oldestOrder ? moment(oldestOrder.createdAt).tz('Asia/Kolkata').format('YYYY-MM-DD') : moment().format('YYYY-MM-DD'),
       to: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
-      fromDate: oldestTx ? oldestTx.transactionDate : new Date('2000-01-01'),
+      fromDate: oldestOrder ? oldestOrder.createdAt : new Date('2000-01-01'),
       toDate: new Date()
     };
 
@@ -921,7 +895,7 @@ exports.deleteAccount = async (req, res, next) => {
       restaurant: user,
       emailType: 'DELETION',
       dateRange: reportDateRange,
-      menuItems: menuItems, // Now handled universally by ReportService
+      menuItems: menuItems,
       subject: 'DigitalMenu - Your Complete Data Export (Account Deletion)',
       customSummary: { totalMenuItems: menuItems.length }
     });
@@ -930,9 +904,8 @@ exports.deleteAccount = async (req, res, next) => {
     await Promise.all([
       Order.deleteMany({ restaurant: userId }),
       DailyLedger.deleteMany({ restaurant: userId }),
-      LedgerTransaction.deleteMany({ restaurant: userId }),
       MenuItem.deleteMany({ restaurant: userId }),
-      Table.deleteMany({ restaurant: userId }), // Delete restaurant tables
+      Table.deleteMany({ restaurant: userId }),
       RestaurantAdmin.findByIdAndDelete(userId)
     ]);
 

@@ -1,7 +1,6 @@
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const DailyLedger = require('../models/DailyLedger');
 const Order = require('../models/Order');
-const LedgerTransaction = require('../models/LedgerTransaction');
 const moment = require('moment-timezone');
 
 /**
@@ -11,7 +10,6 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Step 1: Generate and email monthly reports for all restaurants.
- * Scheduled for the 1st of every month. Can also be triggered manually for specific IDs.
  */
 const processMonthlyReports = async (restaurantIds = []) => {
     try {
@@ -32,17 +30,16 @@ const processMonthlyReports = async (restaurantIds = []) => {
         for (const restaurant of restaurants) {
             try {
                 // 1. Check if restaurant had any activity last month
-                const transactionsCount = await LedgerTransaction.countDocuments({
+                const ordersCount = await Order.countDocuments({
                     restaurant: restaurant._id,
-                    transactionDate: { $gte: monthStart, $lte: monthEnd }
+                    createdAt: { $gte: monthStart, $lte: monthEnd }
                 });
 
-                if (transactionsCount === 0) {
-                    // console.log(`[MonthEnd] Skipping ${restaurant.restaurantName}: No data for ${monthName}`);
+                if (ordersCount === 0) {
                     continue;
                 }
 
-                // 2. Trigger the unified report email logic (Generates Excel & Sends Email)
+                // 2. Trigger the unified report email logic
                 const { sendDetailedReportEmail } = require('./reportHelper');
                 const dateRange = {
                     from: moment(monthStart).tz('Asia/Kolkata').format('YYYY-MM-DD'),
@@ -62,7 +59,7 @@ const processMonthlyReports = async (restaurantIds = []) => {
 
                 console.log(`[MonthEnd] Report sent to: ${restaurant.restaurantName} (${restaurant.email})`);
 
-                // 3. STAGGERED EXECUTION: Sleep for 5 seconds between each restaurant to prevent CPU spike
+                // 3. STAGGERED EXECUTION
                 await sleep(5000);
 
             } catch (restaurantError) {
@@ -78,7 +75,6 @@ const processMonthlyReports = async (restaurantIds = []) => {
 
 /**
  * Step 2: Purge historical data that is older than the current month.
- * Scheduled for the 6th of every month (5 days after the 1st) for safety.
  */
 const purgeAllOldData = async () => {
     try {
@@ -90,12 +86,11 @@ const purgeAllOldData = async () => {
         // We purge in segments to prevent long-locking the DB
         const result = await Promise.all([
             DailyLedger.deleteMany({ date: { $lt: currentMonthStart } }),
-            LedgerTransaction.deleteMany({ transactionDate: { $lt: currentMonthStart } }),
             Order.deleteMany({ createdAt: { $lt: currentMonthStart } })
         ]);
 
         console.log(`[MonthEnd] Purge completed successfully.`);
-        console.log(`[MonthEnd] Stats: Ledgers deleted: ${result[0].deletedCount}, Transactions: ${result[1].deletedCount}, Orders: ${result[2].deletedCount}`);
+        console.log(`[MonthEnd] Stats: Ledgers deleted: ${result[0].deletedCount}, Orders: ${result[1].deletedCount}`);
     } catch (error) {
         console.error('[MonthEnd] Critical error in data purge processing:', error);
         throw error;

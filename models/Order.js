@@ -44,7 +44,7 @@ const orderSchema = new mongoose.Schema({
   },
   tableNumber: {
     type: Number,
-    required: function() {
+    required: function () {
       return this.orderType === 'dine-in';
     },
     min: 1,
@@ -104,6 +104,7 @@ const orderSchema = new mongoose.Schema({
     }
   },
   totalAmount: Number,
+  utr: { type: String, default: '' },
 
   status: {
     type: String,
@@ -113,81 +114,28 @@ const orderSchema = new mongoose.Schema({
     set: v => v ? v.toUpperCase() : v
   },
 
-  paymentMethod: {
+  // Collected Information
+  collectedVia: {
     type: String,
-    enum: ['ONLINE', 'COUNTER'],
-    required: true,
-    index: true,
-    set: v => (v === 'cash' || v === 'COUNTER') ? 'COUNTER' : (v === 'online' || v === 'ONLINE') ? 'ONLINE' : v?.toUpperCase()
+    enum: ['CASH', 'ONLINE'],
+    default: 'CASH',
+    set: v => (v === 'COUNTER' || v === 'CASH' || v === 'cash') ? 'CASH' : v?.toUpperCase()
+  },
+
+  // Flags
+  paymentVerificationRequestbycustomer: {
+    applied: { type: Boolean, default: false },
+    adminAskedretry: { type: Boolean, default: false },
+    retrycount: { type: Number, default: 0 },
+    appliedUTR: { type: String, default: '' }
   },
 
   paymentStatus: {
     type: String,
-    enum: ['PENDING', 'VERIFIED', 'RETRY', 'UNPAID'],
+    enum: ['PENDING', 'VERIFIED', 'UNPAID'],
     default: 'PENDING',
     index: true,
     set: v => v ? v.toUpperCase() : v
-  },
-
-  collectedVia: {
-    type: String,
-    enum: ['CASH', 'ONLINE', 'NOT_COLLECTED'],
-    default: 'NOT_COLLECTED',
-    index: true,
-    set: v => v === 'CASH' ? 'CASH' : v === 'ONLINE' ? 'ONLINE' : 'NOT_COLLECTED'
-  },
-
-  paymentDueStatus: {
-    type: String,
-    enum: ['CLEAR', 'DUE'],
-    default: 'CLEAR',
-    index: true
-  },
-
-  utr: {
-    type: String,
-    maxlength: 6,
-    trim: true,
-    default: '',
-    validate: {
-      validator: function(v) { return !v || v.length <= 6; },
-      message: 'UTR must be max 6 characters'
-    }
-  },
-
-  retryCount: {
-    type: Number,
-    default: 0
-  },
-
-  collectedAt: Date,
-  collectedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'RestaurantAdmin'
-  },
-
-  statusHistory: [{
-    action: String,
-    status: String,
-    paymentStatus: String,
-    reason: String,
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'RestaurantAdmin' },
-    updatedAt: { type: Date, default: Date.now }
-  }],
-
-  refund: {
-    status: {
-      type: String,
-      enum: ['NOT_REQUIRED', 'PENDING', 'COMPLETED'],
-      default: 'NOT_REQUIRED',
-      index: true
-    },
-    amount: Number,
-    method: {
-      type: String,
-      enum: ['COUNTER', 'ONLINE']
-    },
-    processedAt: Date
   },
 
   // Special Instructions
@@ -196,6 +144,7 @@ const orderSchema = new mongoose.Schema({
     trim: true,
     maxlength: 500
   },
+
 
   // Rejection & Cancellation (Kept for business logic)
   rejectionReason: String,
@@ -253,9 +202,22 @@ orderSchema.virtual('orderDuration').get(function () {
   return null;
 });
 
-// Virtual for formatted total amount
-orderSchema.virtual('formattedTotal').get(function () {
-  return `₹${this.totalAmount.toFixed(2)}`;
+// Virtual for financial status flags (used by Ledger logic)
+orderSchema.virtual('isCollected').get(function() {
+  return this.paymentStatus === 'VERIFIED';
+});
+
+orderSchema.virtual('isDue').get(function() {
+  return this.paymentStatus === 'UNPAID';
+});
+
+orderSchema.virtual('isPending').get(function() {
+  return this.paymentStatus === 'PENDING';
+});
+
+// Virtual for submitted UTR (convenience for frontend)
+orderSchema.virtual('submittedUtr').get(function() {
+  return this.paymentVerificationRequestbycustomer?.appliedUTR || null;
 });
 
 // Generate unique 5-digit order number before saving
@@ -285,18 +247,8 @@ orderSchema.pre('save', async function (next) {
     this.orderNumber = orderNumber;
   }
 
-  // Update status history when status changes
-  if (this.isModified('status')) {
-    this.statusHistory.push({
-      status: this.status,
-      updatedAt: new Date()
-    });
-  }
+  // Pre-save hook for random orderNumber
 
-  // Set refund processed date when refund is marked as COMPLETED
-  if (this.isModified('refund.status') && this.refund.status === 'COMPLETED' && !this.refund.processedAt) {
-    this.refund.processedAt = new Date();
-  }
 
   next();
 });
@@ -307,7 +259,6 @@ orderSchema.index({ restaurant: 1, tableNumber: 1, createdAt: -1 });
 orderSchema.index({ restaurant: 1, deviceId: 1, createdAt: -1 });
 orderSchema.index({ restaurant: 1, status: 1, createdAt: -1 });
 orderSchema.index({ restaurant: 1, paymentStatus: 1 });
-orderSchema.index({ restaurant: 1, 'refund.status': 1 });
 orderSchema.index({ createdAt: -1 });
 
 // Text index for searching

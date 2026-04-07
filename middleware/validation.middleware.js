@@ -135,8 +135,8 @@ exports.validateOrder = [
     .withMessage('Total amount must be a positive number'),
   body('paymentMethod')
     .optional()
-    .isIn(['COUNTER', 'ONLINE', 'cash', 'online'])
-    .withMessage('Payment method must be COUNTER or ONLINE'),
+    .isIn(['CASH', 'ONLINE', 'cash', 'online', 'COUNTER', 'counter'])
+    .withMessage('Payment method must be CASH or ONLINE'),
   body('utr')
     .optional()
     .isString()

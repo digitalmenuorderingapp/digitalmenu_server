@@ -15,6 +15,8 @@ router.post('/public/:id/feedback', orderController.submitFeedback);
 router.put('/:id/feedback', orderController.submitFeedback);
 router.put('/device/profile', orderController.updateCustomerProfile); // Update customer profile on orders
 router.put('/:id/retry-payment', orderController.retryPayment);
+router.post('/public/:id/apply-online-payment', orderController.applyOnlinePayment);
+router.post('/public/:id/retry-payment', orderController.retryPayment);
 
 // Customer cancel route (public with deviceId verification)
 router.put('/:id/cancel', orderController.cancelOrder);
@@ -26,11 +28,42 @@ router.use(protect, trackUserActivity);
 router.get('/', orderController.getAllOrders);
 router.get('/table/:tableNumber', orderController.getOrdersByTable);
 router.get('/:id', orderController.getOrderById);
-router.put('/:id/status', checkSubscription, orderController.updateOrderStatus);
-router.put('/:id/verify-payment', orderController.verifyPayment);
-router.put('/:id/collect-payment', orderController.collectPayment);
-router.put('/:id/reject', orderController.rejectOrder);
+
+// Order Management Actions
+router.post('/:id/accept', checkSubscription, (req, res, next) => { 
+  req.body.action = 'ACCEPT_ORDER'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/reject', checkSubscription, (req, res, next) => { 
+  req.body.action = 'REJECT_ORDER'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/serve', checkSubscription, (req, res, next) => { 
+  req.body.action = 'COMPLETE_ORDER'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/collect-payment', checkSubscription, (req, res, next) => { 
+  req.body.action = 'COLLECT_PAYMENT'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/verify-payment', checkSubscription, (req, res, next) => { 
+  req.body.action = 'VERIFY_PAYMENT'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/mark-unpaid', checkSubscription, (req, res, next) => { 
+  req.body.action = 'MARK_UNPAID'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/clear-dues', checkSubscription, (req, res, next) => { 
+  req.body.action = 'CLEAR_DUES'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+router.post('/:id/retry', checkSubscription, (req, res, next) => { 
+  req.body.action = 'REQUEST_RETRY'; 
+  orderController.handleOrderAction(req, res, next); 
+});
+
+// Flexible Action Dispatcher
 router.post('/:id/action', checkSubscription, orderController.handleOrderAction);
-router.post('/:id/refund', orderController.processRefund);
 
 module.exports = router;

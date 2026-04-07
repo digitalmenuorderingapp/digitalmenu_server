@@ -34,10 +34,6 @@ exports.detailedReportEmailTemplate = ({ ownerName, restaurantName, month, dateR
           <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Verified Payments (Gross)</strong></td>
           <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right;">₹${summary.verifiedPayments.toFixed(2)}</td>
         </tr>
-        <tr style="background: #f3f4f6;">
-          <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Total Processed Refunds</strong></td>
-          <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #dc2626;">₹${summary.totalRefunds.toFixed(2)}</td>
-        </tr>
         <tr style="background: #ecfdf5;">
           <td style="padding: 12px; border: 1px solid #e5e7eb;"><strong>Total Transactions</strong></td>
           <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right;">${summary.totalCount}</td>

@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 const { connectDB } = require('./config/db');
@@ -44,6 +45,7 @@ app.set('io', io);
 serverMonitor.setIo(io);
 
 // Middleware
+app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
 app.use(systemMonitor);
@@ -72,6 +74,9 @@ connectDB().then(() => {
 // Scheduled task to mark inactive devices offline
 setInterval(async () => {
   try {
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState !== 1) return;
+
     const RestaurantAdmin = require('./models/RestaurantAdmin');
     const Superadmin = require('./models/Superadmin');
 
@@ -84,7 +89,9 @@ setInterval(async () => {
       console.log(`[OfflineSync] Marked ${totalMarked} devices as offline`);
     }
   } catch (error) {
-    console.error('Error marking devices offline:', error);
+    if (error.name !== 'MongooseError' || !error.message.includes('buffering timed out')) {
+        console.error('Error marking devices offline:', error);
+    }
   }
 }, 60000);
 

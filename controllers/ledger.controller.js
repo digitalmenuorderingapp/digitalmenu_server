@@ -1,10 +1,42 @@
 const DailyLedger = require('../models/DailyLedger');
-const LedgerTransaction = require('../models/LedgerTransaction');
+const Order = require('../models/Order');
 const ledgerService = require('../services/ledger.service');
 const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
 const { reportEmailTemplate } = require('../templates/reportEmail');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
+
+/**
+ * Helper to transform DailyLedger document to match frontend expectation (nested structure)
+ */
+const transformLedgerForFrontend = (ledger) => {
+  if (!ledger) return null;
+  const l = ledger.toObject ? ledger.toObject() : ledger;
+  
+  // Total pending is shared in simplified model
+  const totalPending = l.pendingAmount || 0;
+
+  // Create nested structure exactly as frontend expects
+  return {
+    ...l,
+    cash: {
+      received: l.cashReceivedAmount || 0,
+      verified: l.cashReceivedAmount || 0,
+      pending: totalPending, // Simplified model uses single pending field
+      balance: l.cashReceivedAmount || 0
+    },
+    online: {
+      received: l.onlineReceivedAmount || 0,
+      verified: l.onlineReceivedAmount || 0,
+      pending: 0, 
+      balance: l.onlineReceivedAmount || 0
+    },
+    total: {
+      ...l.total,
+      received: (l.cashReceivedAmount || 0) + (l.onlineReceivedAmount || 0)
+    }
+  };
+};
 
 // Get daily ledger summary
 exports.getDailyLedger = async (req, res, next) => {
@@ -20,7 +52,7 @@ exports.getDailyLedger = async (req, res, next) => {
     
     res.json({
       success: true,
-      data: ledger
+      data: transformLedgerForFrontend(ledger)
     });
   } catch (error) {
     next(error);
@@ -34,14 +66,14 @@ exports.getTodayLedger = async (req, res, next) => {
     
     res.json({
       success: true,
-      data: ledger
+      data: transformLedgerForFrontend(ledger)
     });
   } catch (error) {
     next(error);
   }
 };
 
-// Get transactions for a date (with pagination)
+// Get transactions for a date
 exports.getTransactions = async (req, res, next) => {
   try {
     const { date, startDate, endDate, page = 1, limit = 100 } = req.query;
@@ -52,21 +84,43 @@ exports.getTransactions = async (req, res, next) => {
     if (startDate && endDate) {
         const start = ledgerService.normalizeToISTMidnight(startDate);
         const end = ledgerService.normalizeToISTMidnight(endDate);
-        query.transactionDate = { $gte: start, $lte: end };
+        query.createdAt = { $gte: start, $lte: end };
     } else if (date) {
-        query.transactionDate = ledgerService.normalizeToISTMidnight(date);
+        const start = ledgerService.normalizeToISTMidnight(date);
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
+        query.createdAt = { $gte: start, $lte: end };
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const [transactions, totalCount] = await Promise.all([
-      LedgerTransaction.find(query)
+    const [orders, totalCount] = await Promise.all([
+      Order.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
-        .lean(),
-      LedgerTransaction.countDocuments(query)
+        .lean({ virtuals: true }),
+      Order.countDocuments(query)
     ]);
+
+    // Map Order docs to LedgerTransaction structure for frontend compatibility
+    const transactions = orders.map(order => ({
+      _id: order._id,
+      restaurant: order.restaurant,
+      orderId: order._id,
+      type: 'PAYMENT',
+      paymentMode: order.collectedVia || 'CASH',
+      status: order.paymentStatus || 'PENDING',
+      amount: order.totalAmount,
+      transactionDate: order.createdAt, // Frontend expected field
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      meta: {
+        orderNumber: order.orderNumber,
+        tableNumber: order.tableNumber,
+        deviceId: order.deviceId,
+        utr: order.utr || ''
+      }
+    }));
 
     res.json({
       success: true,
@@ -109,14 +163,14 @@ exports.getMonthlyLedger = async (req, res, next) => {
 
     res.json({
       success: true,
-      data: { ledgers }
+      data: { ledgers: ledgers.map(l => transformLedgerForFrontend(l)) }
     });
   } catch (error) {
     next(error);
   }
 };
 
-// Re-sync (Recalculate) daily ledger from scratch
+// Re-sync (Recalculate) daily ledger
 exports.recalculateLedger = async (req, res, next) => {
   try {
     const { date = new Date() } = req.body;
@@ -127,14 +181,14 @@ exports.recalculateLedger = async (req, res, next) => {
     res.json({
       success: true,
       message: 'Ledger recalculated successfully',
-      data: ledger
+      data: transformLedgerForFrontend(ledger)
     });
   } catch (error) {
     next(error);
   }
 };
 
-// Export detailed monthly report to mail (Manual Trigger)
+// Export detailed monthly report
 exports.exportReportToMail = async (req, res, next) => {
   try {
     const userId = req.userId;
@@ -144,13 +198,11 @@ exports.exportReportToMail = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Restaurant not found' });
     }
 
-    // Return response immediately, process email in background
     res.json({
       success: true,
       message: `Detailed report is being prepared and will be sent to ${user.email} shortly.`
     });
 
-    // Process in background
     (async () => {
       try {
         const moment = require('moment-timezone');
@@ -171,7 +223,6 @@ exports.exportReportToMail = async (req, res, next) => {
           subject: `${user.restaurantName} - Detailed Monthly Report - ${now.format('MMMM YYYY')}`
         });
 
-        console.log(`[ManualExport] Detailed report sent to ${user.email}`);
       } catch (bgError) {
         console.error('[ManualExport] Background export failed:', bgError);
       }

@@ -1,6 +1,6 @@
-const LedgerTransaction = require('../models/LedgerTransaction');
 const DailyLedger = require('../models/DailyLedger');
 const Order = require('../models/Order');
+const mongoose = require('mongoose');
 
 // Normalize to IST 00:00 (18:30 UTC previous day)
 exports.normalizeToISTMidnight = (date) => {
@@ -27,70 +27,20 @@ exports.normalizeToISTMidnight = (date) => {
 
 /**
  * Record a financial movement in the ledger
+ * (Now just a wrapper to trigger sync, as Order is the source of truth)
  */
-exports.recordTransaction = async ({ order, type, amount, mode, status = 'PENDING' }) => {
+exports.recordTransaction = async ({ order, createdAt }) => {
   try {
-    // HARDENING: Only allow 'VERIFIED' or 'PENDING' in LedgerTransaction.
-    // If we get 'UNPAID', 'RETRY', or anything else, fallback to 'PENDING'.
-    const normalizedStatus = status === 'VERIFIED' ? 'VERIFIED' : 'PENDING';
-    
-    const transactionDate = exports.normalizeToISTMidnight(order.createdAt);
-
-    // IDEMPOTENCY GUARD: Prevent duplicate REFUND transactions for the same order.
-    // A refund should only ever be recorded once per order.
-    if (type === 'REFUND') {
-      const existingRefund = await LedgerTransaction.findOne({ orderId: order._id, type: 'REFUND' });
-      if (existingRefund) {
-        console.warn(`[LedgerService] Duplicate REFUND blocked for order: ${order._id}. Existing TX: ${existingRefund._id}`);
-        return existingRefund;
-      }
-    }
-    
-    // Calculate Monthly Running Balance (Resets on 1st of every month)
-    const startOfMonth = new Date(transactionDate.getFullYear(), transactionDate.getMonth(), 1);
-    const lastTx = await LedgerTransaction.findOne({ 
-      restaurant: order.restaurant, 
-      transactionDate: { $gte: startOfMonth } 
-    }).sort({ transactionDate: -1, _id: -1 });
-
-    const currentMonthlyBalance = lastTx ? (lastTx.monthlyNetBalance || 0) : 0;
-    const newMonthlyBalance = currentMonthlyBalance + amount;
-
-    // Also keep overall net balance for historical tracking if needed
-    const lastOverallTx = await LedgerTransaction.findOne({ restaurant: order.restaurant }).sort({ transactionDate: -1, _id: -1 });
-    const currentOverallBalance = lastOverallTx ? (lastOverallTx.netBalance || 0) : 0;
-    const newOverallBalance = currentOverallBalance + amount;
-
-    const transaction = await LedgerTransaction.create({
-      restaurant: order.restaurant,
-      orderId: order._id,
-      type,
-      paymentMode: mode.toUpperCase(),
-      status: normalizedStatus,
-      amount,
-      netBalance: newOverallBalance,
-      monthlyNetBalance: newMonthlyBalance,
-      transactionDate,
-      meta: {
-        orderNumber: order.orderNumber,
-        tableNumber: order.tableNumber,
-        deviceId: order.deviceId,
-        utr: order.utr
-      }
-    });
-
-    // Strategy: Immediately trigger a summary sync for this day
-    await exports.syncDailyLedger(order.restaurant, order.createdAt);
-    
-    return transaction;
+    // Trigger immediate daily sync
+    await exports.syncDailyLedger(order.restaurant, createdAt || order.createdAt);
   } catch (error) {
-    console.error('[LedgerService] recordTransaction failed:', error);
-    throw error;
+    console.error('[LedgerService] recordTransaction proxy failed:', error);
+    // Non-blocking for the main order flow
   }
 };
 
 /**
- * Sync (Rebuild) the DailyLedger summary from LedgerTransactions and Orders
+ * Sync (Rebuild) the DailyLedger summary from Orders
  */
 exports.syncDailyLedger = async (restaurantId, date) => {
   try {
@@ -98,61 +48,39 @@ exports.syncDailyLedger = async (restaurantId, date) => {
     const startOfDay = targetDate;
     const endOfDay = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000 - 1);
 
-    // Ensure restaurantId is an ObjectId if it happens to be a string
-    const mongoose = require('mongoose');
     const rId = typeof restaurantId === 'string' ? new mongoose.Types.ObjectId(restaurantId) : restaurantId;
 
-    // 1. Independent count of all order states
+    // 1. Fetch all orders for this restaurant and date
     const allOrders = await Order.find({
       restaurant: rId,
       createdAt: { $gte: startOfDay, $lte: endOfDay }
     });
 
     // 2. Fetch all successful orders for analytics (Items & Hours)
-    const orders = await Order.find({
-      restaurant: rId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-      status: { $nin: ['REJECTED', 'CANCELLED'] }
-    });
+    const activeOrders = allOrders.filter(o => !['REJECTED', 'CANCELLED'].includes(o.status));
     
     if (process.env.NODE_ENV === 'development') {
-      console.log(`[LedgerSync] ${targetDate.toISOString()} - Found ${allOrders.length} total orders, ${orders.length} active orders.`);
+      console.log(`[LedgerSync] ${targetDate.toISOString()} - Found ${allOrders.length} total orders, ${activeOrders.length} active orders.`);
     }
 
-
-    // 3. Self-healing: Ensure all orders have a PAYMENT transaction for this date
-    // This handles orders that might have been created without a transaction record
-    for (const o of allOrders) {
-      const hasTx = await LedgerTransaction.exists({ orderId: o._id, type: 'PAYMENT' });
-      if (!hasTx) {
-          console.log(`[LedgerService] Healing missing transaction for order: ${o._id}`);
-          let mode = o.paymentMethod || 'COUNTER';
-          if (mode === 'CASH') mode = 'COUNTER';
-
-          await exports.recordTransaction({
-              order: o,
-              type: 'PAYMENT',
-              amount: o.totalAmount,
-              mode: mode,
-              status: o.paymentStatus // Now safely normalized by recordTransaction
-          });
-      }
-    }
-
-    // 4. Re-fetch transactions after healing
-    const transactions = await LedgerTransaction.find({
-      restaurant: restaurantId,
-      transactionDate: targetDate
-    });
-
-    // Create a fresh DailyLedger summary
+    // 3. Create/Get DailyLedger summary
     const ledger = await DailyLedger.getOrCreateLedger(targetDate, restaurantId);
-    
-    // RESET all totals to 0 before accumulation to prevent duplicate/stale sums
-    ledger.counter = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
-    ledger.online = { received: 0, verified: 0, pending: 0, refunded: 0, balance: 0 };
-    ledger.total = { received: 0, refunded: 0, netBalance: 0, unpaidDues: 0, totalRevenue: 0 };
-    ledger.counts = { totalOrders: 0, servedOrders: 0, rejectedOrders: 0, cancelledOrders: 0 };
+
+    // RESET all totals to 0 before accumulation
+    ledger.cashReceivedAmount = 0;
+    ledger.onlineReceivedAmount = 0;
+    ledger.pendingAmount = 0;
+    ledger.total = { netBalance: 0, unpaidDues: 0, totalRevenue: 0 };
+
+    ledger.counts = { 
+      totalOrders: 0, 
+      servedOrders: 0, 
+      rejectedOrders: 0, 
+      cancelledOrders: 0,
+      orderType: { dineIn: 0, takeaway: 0, delivery: 0 },
+      pendingPayments: 0,
+      dueOrders: 0
+    };
     ledger.soldItems = [];
     ledger.hourlyBreakdown.forEach(h => {
       h.orders = 0;
@@ -160,92 +88,78 @@ exports.syncDailyLedger = async (restaurantId, date) => {
       h.servedOrders = 0;
     });
     
-    // 4. Calculate Earned Revenue & Unpaid Dues
+    // 4. Calculate Stats from Orders
     let earnedRevenue = 0;
     let unpaidDues = 0;
-    const verifiedOrderIds = new Set(transactions.filter(t => t.type === 'PAYMENT' && t.status === 'VERIFIED').map(t => t.orderId?.toString()));
-    const orderStatusMap = new Map();
+    let totalPending = 0;
+    let cashVerified = 0;
+    let onlineVerified = 0;
 
-    allOrders.forEach(o => {
-      const oid = o._id.toString();
-      const isVerified = verifiedOrderIds.has(oid);
-      const isServed = o.status === 'COMPLETED';
-      const isRejected = o.status === 'REJECTED' || o.status === 'CANCELLED';
-      const isUnpaid = o.paymentStatus === 'UNPAID';
-      const amt = o.totalAmount || 0;
-
-      orderStatusMap.set(oid, o.status);
-
-      if (!isRejected) {
-        if (isVerified && isServed) {
-          earnedRevenue += amt;
-        } else if (isServed && !isVerified && isUnpaid) {
-          earnedRevenue += -amt;
-        }
-
-        if (isServed && o.paymentDueStatus === 'DUE') {
-          unpaidDues += amt;
-        }
-      }
-    });
-
-    // PROCESS TRANSACTIONS (Financial Truth from LedgerTransactions)
-    transactions.forEach(tx => {
-      const mode = (tx.paymentMode === 'CASH' || tx.paymentMode === 'COUNTER') ? 'counter' : 'online';
-      const orderStatus = orderStatusMap.get(tx.orderId?.toString()) || 'N/A';
-      const isRejected = orderStatus === 'REJECTED' || orderStatus === 'CANCELLED';
-
-      if (tx.type === 'PAYMENT') {
-        ledger[mode].received += tx.amount;
-        if (tx.status === 'VERIFIED') {
-          ledger[mode].verified += tx.amount;
-        } else if (!isRejected) {
-          // Awaiting Verification: only for non-rejected, non-cancelled orders
-          ledger[mode].pending += tx.amount;
-        }
-      } else {
-        ledger[mode].refunded += Math.abs(tx.amount);
-      }
-    });
-    
-    // FINALIZING BALANCES
-    ledger.counter.balance = ledger.counter.verified - ledger.counter.refunded; 
-    ledger.online.balance = ledger.online.verified - ledger.online.refunded;
-    ledger.total.received = ledger.counter.verified + ledger.online.verified; 
-    ledger.total.refunded = ledger.counter.refunded + ledger.online.refunded;
-    ledger.total.netBalance = ledger.total.received - ledger.total.refunded;
-    ledger.total.unpaidDues = unpaidDues;
-    ledger.total.totalRevenue = earnedRevenue;
-
-    // PROCESS COUNTS (Operational Truth)
     allOrders.forEach(o => {
       ledger.counts.totalOrders++;
+      
+      const isRejected = ['REJECTED', 'CANCELLED'].includes(o.status);
+      const isVerified = o.paymentStatus === 'VERIFIED';
+      const isServed = o.status === 'COMPLETED';
+      const isDue = o.paymentStatus === 'UNPAID';
+      const isPending = o.paymentStatus === 'PENDING';
+      const amt = o.totalAmount || 0;
+
+      // Operational Counts
       if (o.status === 'COMPLETED') ledger.counts.servedOrders++;
       else if (o.status === 'REJECTED') ledger.counts.rejectedOrders++;
       else if (o.status === 'CANCELLED') ledger.counts.cancelledOrders++;
+
+      if (!isRejected) {
+        // Order Type
+        if (o.orderType === 'dine-in') ledger.counts.orderType.dineIn++;
+        else if (o.orderType === 'takeaway') ledger.counts.orderType.takeaway++;
+        else if (o.orderType === 'delivery') ledger.counts.orderType.delivery++;
+        
+        // Payment Counts
+        if (!isVerified) ledger.counts.pendingPayments++;
+        if (isDue) ledger.counts.dueOrders++;
+
+        // Financials
+        if (isVerified) {
+          if (o.collectedVia === 'CASH') cashVerified += amt;
+          else if (o.collectedVia === 'ONLINE') onlineVerified += amt;
+        }
+
+        if (isServed) earnedRevenue += amt;
+        if (isDue) unpaidDues += amt;
+        if (isPending) totalPending += amt;
+      }
     });
 
-    // PROCESS ANALYTICS (Analytics Truth)
-    orders.forEach(o => {
+    ledger.cashReceivedAmount = cashVerified;
+    ledger.onlineReceivedAmount = onlineVerified;
+    ledger.pendingAmount = totalPending;
+    ledger.total.netBalance = cashVerified + onlineVerified;
+    ledger.total.unpaidDues = unpaidDues;
+    ledger.total.totalRevenue = earnedRevenue;
+
+    // 5. Process Analytics Breakdown
+    activeOrders.forEach(o => {
       const orderHour = new Date(o.createdAt).getHours();
       const hourly = ledger.hourlyBreakdown.find(h => h.hour === orderHour);
       if (hourly) {
         hourly.orders++;
-        hourly.revenue += o.totalAmount;
+        hourly.revenue += (o.totalAmount || 0);
         if (o.status === 'COMPLETED') hourly.servedOrders++;
       }
 
-      o.items.forEach(item => {
-        const existing = ledger.soldItems.find(si => si.menuItemId.toString() === item.itemId.toString());
+      (o.items || []).forEach(item => {
+        const existing = ledger.soldItems.find(si => si.menuItemId?.toString() === item.itemId?.toString());
         if (existing) {
-          existing.count += item.quantity;
-          existing.totalRevenue += (item.price * item.quantity);
+          existing.count += (item.quantity || 0);
+          existing.totalRevenue += ((item.price || 0) * (item.quantity || 0));
         } else {
           ledger.soldItems.push({
             menuItemId: item.itemId,
             name: item.name,
             count: item.quantity,
-            totalRevenue: item.price * item.quantity
+            totalRevenue: (item.price || 0) * (item.quantity || 0)
           });
         }
       });
@@ -262,9 +176,9 @@ exports.syncDailyLedger = async (restaurantId, date) => {
 };
 
 /**
- * Utility: Delete all transactions for an order and re-record
- * (Useful for status changes or corrections)
+ * Proxy for reverting orders
  */
 exports.revertOrderTransactions = async (orderId, restaurantId) => {
-  await LedgerTransaction.deleteMany({ orderId, restaurant: restaurantId });
+  // No-op now as we don't store separate transactions
+  return true;
 };

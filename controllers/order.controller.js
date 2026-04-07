@@ -1,5 +1,4 @@
 const Order = require('../models/Order');
-const LedgerTransaction = require('../models/LedgerTransaction');
 const ledgerService = require('../services/ledger.service');
 const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
@@ -8,9 +7,7 @@ const RestaurantAdmin = require('../models/RestaurantAdmin');
 
 // Helper to attach transactions to a single order
 const getEnrichedOrder = async (order) => {
-  const orderObj = order.toObject();
-  orderObj.transactions = await LedgerTransaction.find({ orderId: order._id });
-  return orderObj;
+  return order.toObject({ virtuals: true });
 };
 
 // Create order - Optimized for speed
@@ -32,7 +29,7 @@ exports.createOrder = async (req, res, next) => {
       specialInstructions
     } = req.body;
 
-    // 1. Create order (fast - single DB write)
+    // 1. Create order
     const order = await Order.create({
       restaurant: restaurantId || req.userId,
       tableNumber: orderType === 'dine-in' ? tableNumber : undefined,
@@ -42,7 +39,10 @@ exports.createOrder = async (req, res, next) => {
       sessionId,
       items,
       totalAmount,
-      paymentMethod: paymentMethod || 'COUNTER',
+      paymentVerificationRequestbycustomer: {
+        applied: paymentMethod === 'ONLINE',
+        appliedUTR: (paymentMethod === 'ONLINE' && utr) ? utr.substring(0, 6) : ''
+      },
       utr: utr ? utr.substring(0, 6) : '',
       orderType,
       numberOfPersons: orderType === 'dine-in' ? numberOfPersons : undefined,
@@ -61,17 +61,9 @@ exports.createOrder = async (req, res, next) => {
     });
 
     // 3. Do async work AFTER response (non-blocking)
-    // Fire-and-forget ledger recording
-    ledgerService.recordTransaction({
-      order,
-      type: 'PAYMENT',
-      amount: order.totalAmount,
-      mode: order.paymentMethod,
-      status: 'PENDING'
-    }).catch(err => console.error('[OrderController] Failed to record transaction:', err));
-
     // Fire-and-forget socket emission
     const io = req.app.get('io');
+
     if (io) {
       const targetId = restaurantId || req.userId;
       const roomId = targetId?.toString();
@@ -94,76 +86,54 @@ exports.handleOrderAction = async (req, res, next) => {
     const { id: orderId } = req.params;
     const { action, payload = {} } = req.body;
     const adminId = req.userId;
+    console.log(`[Action] Received action: ${action} for order: ${orderId}`);
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
 
-    const update = { statusHistory: order.statusHistory || [] };
+    const update = {};
     const now = new Date();
-    let ledgerType = null;
-    let ledgerStatus = 'PENDING';
-    let ledgerAmount = 0;
-    let ledgerMode = null;
-
-    const addHistory = (reason = '') => {
-      update.statusHistory.push({
-        action,
-        status: update.status || order.status,
-        paymentStatus: update.paymentStatus || order.paymentStatus,
-        reason: reason || payload.reason || '',
-        updatedBy: adminId,
-        updatedAt: now
-      });
-    };
+    let isPaymentAction = false;
 
     switch (action) {
       case "VERIFY_PAYMENT":
-        if (order.paymentMethod !== 'ONLINE') {
+        if (order.collectedVia !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be verified." });
         }
         update.paymentStatus = "VERIFIED";
         update.collectedVia = "ONLINE";
-        update.paymentDueStatus = "CLEAR";
-        update.collectedAt = now;
-        update.collectedBy = adminId;
-        if (payload.utr) update.utr = payload.utr.toString().slice(-6);
+        update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+        update.paymentVerificationRequestbycustomer = undefined;
         
-        ledgerType = 'PAYMENT';
-        ledgerStatus = 'VERIFIED';
-        ledgerAmount = order.totalAmount;
-        ledgerMode = 'ONLINE';
-        addHistory();
+        isPaymentAction = true;
         break;
 
       case "REQUEST_RETRY":
-        if (order.paymentMethod !== 'ONLINE') {
+        if (order.collectedVia !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be marked for retry." });
         }
         if (order.paymentStatus === 'VERIFIED') {
           return res.status(400).json({ success: false, message: "Payment is already verified. Retry not needed." });
         }
-        if (['ACCEPTED', 'REJECTED', 'CANCELLED', 'COMPLETED'].includes(order.status)) {
-          return res.status(400).json({ success: false, message: `Cannot retry payment for order in ${order.status} state.` });
-        }
-        if ((order.retryCount || 0) >= 3) {
+        if ((order.paymentVerificationRequestbycustomer?.retrycount || 0) >= 3) {
           return res.status(400).json({ success: false, message: "Max retry limit (3) reached. Please mark as UNPAID." });
         }
-        update.paymentStatus = "RETRY";
-        update.retryCount = (order.retryCount || 0) + 1;
-        addHistory();
+        update.paymentStatus = "PENDING";
+        update.paymentVerificationRequestbycustomer = {
+          applied: false, // Customer must re-apply with new UTR
+          adminAskedretry: true,
+          retrycount: (order.paymentVerificationRequestbycustomer?.retrycount || 0) + 1
+        };
         break;
 
       case "MARK_UNPAID":
+        if (!payload.reason) return res.status(400).json({ success: false, message: "Reason is required to mark as unpaid." });
         update.paymentStatus = "UNPAID";
-        update.unpaidReason = payload.reason || "Payment not received";
-        if (!["COMPLETED", "REJECTED"].includes(order.status)) {
-          update.status = "REJECTED";
-          update.rejectionReason = payload.reason || "Payment not received";
-        }
-        if (order.status === "COMPLETED") {
-          update.paymentDueStatus = "DUE";
-        }
-        addHistory(payload.reason);
+        update.unpaidReason = payload.reason;
+        update.utr = undefined; // Clear UTR on unpaid status
+        update.paymentVerificationRequestbycustomer = undefined; // Clear retry state
+        
+        isPaymentAction = true;
         break;
 
       case "ACCEPT_ORDER":
@@ -171,7 +141,8 @@ exports.handleOrderAction = async (req, res, next) => {
           return res.status(400).json({ success: false, message: "Only PLACED orders can be accepted." });
         }
         update.status = "ACCEPTED";
-        addHistory();
+        
+        isPaymentAction = true;
         break;
 
       case "REJECT_ORDER":
@@ -180,27 +151,15 @@ exports.handleOrderAction = async (req, res, next) => {
         }
         update.status = "REJECTED";
         update.rejectionReason = payload.reason || "Order rejected by admin";
-        if (order.paymentStatus === "VERIFIED") {
-          update['refund.status'] = "PENDING";
-          update['refund.amount'] = order.totalAmount;
-          update['refund.method'] = order.collectedVia === 'CASH' ? 'COUNTER' : 'ONLINE';
-        } else {
-          update['refund.status'] = "NOT_REQUIRED";
-        }
-        addHistory(payload.reason);
         break;
+
+
 
       case "COMPLETE_ORDER": // SERVE
         if (!["ACCEPTED", "PLACED"].includes(order.status)) {
           return res.status(400).json({ success: false, message: "Order must be PLACED or ACCEPTED to be served." });
         }
         update.status = "COMPLETED";
-        if (order.paymentStatus !== 'VERIFIED') {
-          update.paymentDueStatus = "DUE";
-        } else {
-          update.paymentDueStatus = "CLEAR";
-        }
-        addHistory();
         break;
 
       case "COLLECT_PAYMENT":
@@ -209,32 +168,28 @@ exports.handleOrderAction = async (req, res, next) => {
         }
         update.paymentStatus = "VERIFIED";
         update.collectedVia = payload.method;
-        update.paymentDueStatus = "CLEAR";
-        update.collectedAt = now;
-        update.collectedBy = adminId;
-        if (payload.method === "ONLINE" && payload.utr) {
-          update.utr = payload.utr.toString().slice(-6);
+        if (payload.method === 'ONLINE') {
+          update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+        } else {
+          update.utr = undefined; // Clear UTR for CASH collection
         }
+        update.paymentVerificationRequestbycustomer = undefined;
         
-        ledgerType = 'PAYMENT';
-        ledgerStatus = 'VERIFIED';
-        ledgerAmount = order.totalAmount;
-        ledgerMode = payload.method === 'CASH' ? 'COUNTER' : 'ONLINE';
-        addHistory();
+        isPaymentAction = true;
         break;
 
-      case "COMPLETE_REFUND":
-        if (!order.refund || order.refund.status !== 'PENDING') {
-          return res.status(400).json({ success: false, message: "No pending refund found for this order." });
+      case "CLEAR_DUES":
+        const clearMethod = payload.method || "CASH";
+        update.paymentStatus = "VERIFIED";
+        update.collectedVia = clearMethod;
+        if (clearMethod === 'ONLINE') {
+          update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+        } else {
+          update.utr = undefined; // Clear UTR for CASH clearing
         }
-        update['refund.status'] = "COMPLETED";
-        update['refund.processedAt'] = now;
-        
-        ledgerType = 'REFUND';
-        ledgerStatus = 'VERIFIED';
-        ledgerAmount = -order.totalAmount;
-        ledgerMode = order.refund.method === 'COUNTER' ? 'COUNTER' : 'ONLINE';
-        addHistory();
+        update.paymentVerificationRequestbycustomer = undefined;
+                
+        isPaymentAction = true;
         break;
 
       default:
@@ -248,22 +203,13 @@ exports.handleOrderAction = async (req, res, next) => {
       { new: true }
     );
 
-    // Sync with Ledger if verified payment or refund occurs
-    if (ledgerType) {
+    // Sync with Ledger if verified payment or status change occurs
+    const syncRelevantStates = ['COMPLETED', 'REJECTED', 'ACCEPTED'];
+    if (isPaymentAction || syncRelevantStates.includes(update.status)) {
         ledgerService.recordTransaction({
             order: updatedOrder,
-            type: ledgerType,
-            amount: ledgerAmount,
-            mode: ledgerMode,
-            status: ledgerStatus
+            createdAt: updatedOrder.createdAt
         }).catch(err => console.error('[OrderController] Ledger sync failed:', err));
-    }
-
-    // Force DailyLedger sync on major changes
-    const syncRelevantStates = ['COMPLETED', 'REJECTED', 'ACCEPTED'];
-    if (syncRelevantStates.includes(update.status) || ledgerType) {
-        ledgerService.syncDailyLedger(updatedOrder.restaurant, updatedOrder.createdAt)
-            .catch(err => console.error('[OrderController] DailyLedger sync failed:', err));
     }
 
     const enrichedOrder = await getEnrichedOrder(updatedOrder);
@@ -396,16 +342,7 @@ exports.getOrdersByTable = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .limit(50);
 
-    const orderIds = orders.map(o => o._id);
-    const transactions = await LedgerTransaction.find({ orderId: { $in: orderIds } });
-
-    const enrichedOrders = orders.map(o => {
-      const orderObj = o.toObject();
-      orderObj.transactions = transactions.filter(tx => 
-        tx.orderId && tx.orderId.toString() === o._id.toString()
-      );
-      return orderObj;
-    });
+    const enrichedOrders = orders.map(o => o.toObject({ virtuals: true }));
 
     res.json({
       success: true,
@@ -487,65 +424,7 @@ exports.getAllOrders = async (req, res, next) => {
           totalRevenue: {
             $sum: {
               $cond: [
-                { $and: [
-                  { $eq: ['$status', 'COMPLETED'] },
-                  { $or: [
-                    { $eq: [{ $ifNull: ['$refund.status', 'NOT_REQUIRED'] }, 'NOT_REQUIRED'] },
-                    { $ne: ['$refund.status', 'COMPLETED'] }
-                  ]}
-                ]},
-                '$totalAmount',
-                0
-              ]
-            }
-          },
-          onlinePending: {
-            $sum: {
-              $cond: [
-                { $and: [
-                  { $eq: ['$paymentMethod', 'ONLINE'] },
-                  { $eq: ['$paymentStatus', 'PENDING'] },
-                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
-                ]},
-                1,
-                0
-              ]
-            }
-          },
-          onlinePendingAmount: {
-            $sum: {
-              $cond: [
-                { $and: [
-                  { $eq: ['$paymentMethod', 'ONLINE'] },
-                  { $eq: ['$paymentStatus', 'PENDING'] },
-                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
-                ]},
-                '$totalAmount',
-                0
-              ]
-            }
-          },
-          counterPending: {
-            $sum: {
-              $cond: [
-                { $and: [
-                  { $eq: ['$paymentMethod', 'COUNTER'] },
-                  { $eq: ['$paymentStatus', 'PENDING'] },
-                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
-                ]},
-                1,
-                0
-              ]
-            }
-          },
-          counterPendingAmount: {
-            $sum: {
-              $cond: [
-                { $and: [
-                  { $eq: ['$paymentMethod', 'COUNTER'] },
-                  { $eq: ['$paymentStatus', 'PENDING'] },
-                  { $not: { $in: ['$status', ['REJECTED', 'CANCELLED']] } }
-                ]},
+                { $eq: ['$paymentStatus', 'VERIFIED'] },
                 '$totalAmount',
                 0
               ]
@@ -554,51 +433,52 @@ exports.getAllOrders = async (req, res, next) => {
           unpaidDuesAmount: {
             $sum: {
               $cond: [
-                { $and: [
-                  { $eq: ['$paymentDueStatus', 'DUE'] },
-                  { $eq: ['$status', 'COMPLETED'] }
-                ]},
+                { $eq: ['$paymentStatus', 'UNPAID'] },
                 '$totalAmount',
                 0
               ]
             }
           },
-          totalRefunds: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, 1, 0] } },
-          totalRefundAmount: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, '$refund.amount', 0] } },
+          duesPending: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'UNPAID'] }, 1, 0] } },
+          
+          onlinePending: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'ONLINE'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, 1, 0] } },
+          onlinePendingAmount: { 
+            $sum: { 
+              $cond: [{ $and: [{ $eq: ['$paymentMethod', 'ONLINE'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] 
+            } 
+          },
+
+          cashPending: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'CASH'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, 1, 0] } },
+          cashPendingAmount: { 
+            $sum: { 
+              $cond: [{ $and: [{ $eq: ['$paymentMethod', 'CASH'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] 
+            } 
+          },
+
           counterGross: {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentMethod', 'COUNTER'] },
-                  { $eq: ['$status', 'COMPLETED'] },
-                  { $or: [
-                    { $eq: [{ $ifNull: ['$refund.status', 'NOT_REQUIRED'] }, 'NOT_REQUIRED'] },
-                    { $ne: ['$refund.status', 'COMPLETED'] }
-                  ]}
+                  { $eq: ['$collectedVia', 'CASH'] },
+                  { $eq: ['$paymentStatus', 'VERIFIED'] }
                 ]},
                 '$totalAmount',
                 0
               ]
             }
           },
-          counterRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, { $cond: [{ $eq: ['$paymentMethod', 'COUNTER'] }, '$refund.amount', 0] }, 0] } },
           onlineGross: {
             $sum: {
               $cond: [
                 { $and: [
-                  { $eq: ['$paymentMethod', 'ONLINE'] },
-                  { $eq: ['$status', 'COMPLETED'] },
-                  { $or: [
-                    { $eq: [{ $ifNull: ['$refund.status', 'NOT_REQUIRED'] }, 'NOT_REQUIRED'] },
-                    { $ne: ['$refund.status', 'COMPLETED'] }
-                  ]}
+                  { $eq: ['$collectedVia', 'ONLINE'] },
+                  { $eq: ['$paymentStatus', 'VERIFIED'] }
                 ]},
                 '$totalAmount',
                 0
               ]
             }
           },
-          onlineRefunded: { $sum: { $cond: [{ $eq: ['$refund.status', 'COMPLETED'] }, { $cond: [{ $eq: ['$paymentMethod', 'ONLINE'] }, '$refund.amount', 0] }, 0] } }
         }
       }
     ];
@@ -607,331 +487,46 @@ exports.getAllOrders = async (req, res, next) => {
     const stats = statsResult || {
       totalOrders: 0, placed: 0, accepted: 0, completed: 0, rejected: 0, cancelled: 0,
       servingPending: 0,
-      totalRevenue: 0, onlinePending: 0, counterPending: 0, totalRefunds: 0, totalRefundAmount: 0,
-      counterGross: 0, counterRefunded: 0, onlineGross: 0, onlineRefunded: 0
+      totalRevenue: 0, 
+      onlinePending: 0, onlinePendingAmount: 0,
+      cashPending: 0, cashPendingAmount: 0,
+      duesPending: 0, unpaidDuesAmount: 0,
+      counterGross: 0, onlineGross: 0
     };
-
-    // Attach transactions for each order (batch query)
-    const orderIds = orders.map(o => o._id);
-    const transactions = orderIds.length > 0 
-      ? await LedgerTransaction.find({ orderId: { $in: orderIds } }).lean()
-      : [];
 
     const enrichedOrders = orders.map(o => ({
       ...o,
-      transactions: transactions.filter(tx => 
-        tx.orderId && tx.orderId.toString() === o._id.toString()
-      )
+      transactions: [] // Maintain property for interface compatibility
     }));
 
     res.json({
       success: true,
-      count: enrichedOrders.length,
       data: enrichedOrders,
-      stats: stats
-    });
-  } catch (error) {
-    next(error)
-  }
-};
-
-// Update order status
-exports.updateOrderStatus = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    const validStatuses = ['PLACED', 'ACCEPTED', 'COMPLETED'];
-
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status'
-      });
-    }
-
-    const order = await Order.findOne({ _id: id, restaurant: req.userId });
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    // ENFORCE SERVING RULE: do NOT serve (ACCEPTED or COMPLETED) if ONLINE and not VERIFIED
-    if (['ACCEPTED', 'COMPLETED'].includes(status)) {
-      if (order.paymentMethod === 'ONLINE' && order.paymentStatus !== 'VERIFIED') {
-        return res.status(400).json({
-          success: false,
-          message: 'Payment must be verified before serving online orders'
-        });
+      stats: {
+        totalOrders: stats.totalOrders || 0,
+        placed: stats.placed || 0,
+        accepted: stats.accepted || 0,
+        servingPending: stats.servingPending || 0,
+        completed: stats.completed || 0,
+        rejected: stats.rejected || 0,
+        cancelled: stats.cancelled || 0,
+        totalRevenue: stats.totalRevenue || 0,
+        onlinePending: stats.onlinePending || 0,
+        onlinePendingAmount: stats.onlinePendingAmount || 0,
+        cashPending: stats.cashPending || 0,
+        cashPendingAmount: stats.cashPendingAmount || 0,
+        duesPending: stats.duesPending || 0,
+        unpaidDuesAmount: stats.unpaidDuesAmount || 0,
+        counterGross: stats.counterGross || 0,
+        onlineGross: stats.onlineGross || 0
       }
-    }
-
-    // If moving to COMPLETED and not VERIFIED, mark as DUE (Only for COUNTER, as ONLINE is blocked above)
-    if (status === 'COMPLETED' && order.paymentStatus !== 'VERIFIED') {
-      order.paymentDueStatus = 'DUE';
-    }
-
-    order.status = status;
-    await order.save();
-
-    // Update summary when order is COMPLETED (for Analytics only, no financial change)
-    if (status === 'COMPLETED') {
-      try {
-        await ledgerService.syncDailyLedger(req.userId, order.createdAt);
-      } catch (ledgerError) {
-        console.error('Failed to sync summary on order completed:', ledgerError);
-      }
-    }
-
-    // Emit real-time event to customer device and admin
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    const io = req.app.get('io');
-    if (io) {
-      const adminRoom = order.restaurant.toString();
-      const customerRoom = order.deviceId;
-      
-      console.log(`[Socket] Order update emitted: ${id} status: ${status}`);
-      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-    }
-
-    res.json({
-      success: true,
-      message: 'Order status updated successfully',
-      data: enrichedOrder
     });
   } catch (error) {
     next(error);
   }
 };
 
-// Get single order by ID
-exports.getOrderById = async (req, res, next) => {
-  try {
-    const { id } = req.params;
 
-    const order = await Order.findById(id);
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    res.json({
-      success: true,
-      data: enrichedOrder
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Get single order by ID (public)
-exports.getOrderByIdPublic = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-
-    const order = await Order.findById(id);
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    res.json({
-      success: true,
-      data: enrichedOrder
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Submit feedback for order
-exports.submitFeedback = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { rating, comment } = req.body;
-
-    // Validate rating
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({
-        success: false,
-        message: 'Rating must be between 1 and 5'
-      });
-    }
-
-    // Validate comment length
-    if (comment && comment.length > 500) {
-      return res.status(400).json({
-        success: false,
-        message: 'Comment must be less than 500 characters'
-      });
-    }
-
-    const order = await Order.findById(id);
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    // Only allow feedback for served orders
-    if (order.status !== 'served') {
-      return res.status(400).json({
-        success: false,
-        message: 'Feedback can only be submitted for served orders'
-      });
-    }
-
-    // Update feedback
-    order.feedback = {
-      rating,
-      comment: comment || '',
-      submittedAt: new Date()
-    };
-
-    await order.save();
-
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    res.json({
-      success: true,
-      message: 'Feedback submitted successfully',
-      data: enrichedOrder
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Verify online payment (Admin)
-exports.verifyPayment = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { utr } = req.body;
-
-    const order = await Order.findOne({ _id: id, restaurant: req.userId });
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    if (order.paymentMethod !== 'ONLINE') {
-      return res.status(400).json({
-        success: false,
-        message: 'This order is not an online payment order'
-      });
-    }
-
-    if (order.paymentStatus === 'VERIFIED') {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment already verified'
-      });
-    }
-
-    // Update payment verification
-    order.paymentStatus = 'VERIFIED';
-    order.collectedVia = 'ONLINE';
-    order.collectedAt = new Date();
-    order.collectedBy = req.userId;
-    order.paymentDueStatus = 'CLEAR';
-    
-    if (utr) {
-      order.utr = utr.substring(0, 6);
-    }
-
-    await order.save();
-
-    // Verify existing TRANSACTION and Sync
-    try {
-      const LedgerTransaction = require('../models/LedgerTransaction');
-      await LedgerTransaction.updateMany(
-        { orderId: order._id, type: 'PAYMENT' },
-        { status: 'VERIFIED' }
-      );
-      await ledgerService.syncDailyLedger(req.userId, order.createdAt);
-    } catch (ledgerError) {
-      console.error('Failed to update ledger on payment verification:', ledgerError);
-    }
-
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    // Emit update to admin and customer
-    const io = req.app.get('io');
-    if (io) {
-      const adminRoom = (order.restaurant || req.userId)?.toString();
-      const customerRoom = order.deviceId;
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      if (customerRoom) {
-        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-        io.to(customerRoom).emit('paymentVerified', enrichedOrder);
-      }
-    }
-
-    res.json({
-      success: true,
-      message: 'Payment verified successfully',
-      data: enrichedOrder
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Mark online payment as RETRY (Admin)
-exports.markPaymentRetry = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-
-    const order = await Order.findOne({ _id: id, restaurant: req.userId });
-
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    if (order.paymentMethod !== 'ONLINE') {
-      return res.status(400).json({ success: false, message: 'Only ONLINE payments can be marked for retry' });
-    }
-
-    order.paymentStatus = 'RETRY';
-    await order.save();
-
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    // Emit update
-    const io = req.app.get('io');
-    if (io) {
-      const adminRoom = (order.restaurant || req.userId)?.toString();
-      const customerRoom = order.deviceId;
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-      io.to(customerRoom).emit('paymentRetry', enrichedOrder);
-    }
-
-    res.json({ success: true, message: 'Payment marked for retry', data: enrichedOrder });
-  } catch (error) {
-    next(error);
-  }
-};
 
 // Retry/Update payment (Customer)
 exports.retryPayment = async (req, res, next) => {
@@ -946,26 +541,32 @@ exports.retryPayment = async (req, res, next) => {
     }
 
     // Update payment details
-    if (paymentMethod) order.paymentMethod = paymentMethod;
+    if (paymentMethod) {
+      order.collectedVia = paymentMethod;
+    }
     if (paymentMethod === 'ONLINE') {
-      if (!utr || utr.length < 6) {
-        return res.status(400).json({ success: false, message: 'Valid 6-digit UTR is mandatory for online payments.' });
-      }
-      order.utr = utr.substring(0, 6);
+      if (!order.paymentVerificationRequestbycustomer) order.paymentVerificationRequestbycustomer = {};
+      order.paymentVerificationRequestbycustomer.applied = paymentMethod === 'ONLINE';
+      order.paymentVerificationRequestbycustomer.appliedUTR = (paymentMethod === 'ONLINE' && utr) ? utr.substring(0, 6) : order.paymentVerificationRequestbycustomer.appliedUTR;
     }
     
     order.paymentStatus = 'PENDING';
-    order.retryCount = (order.retryCount || 0) + 1;
+    order.isCollected = false;
+    order.paymentVerificationRequestbycustomer.retrycount = (order.paymentVerificationRequestbycustomer.retrycount || 0) + 1;
 
     await order.save();
 
     const enrichedOrder = await getEnrichedOrder(order);
 
-    // Emit update to admin
+    // Emit update to admin and customer
     const io = req.app.get('io');
     if (io) {
       const adminRoom = order.restaurant.toString();
+      const customerRoom = order.deviceId;
       io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+      if (customerRoom) {
+        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+      }
     }
 
     res.json({ success: true, message: 'Payment updated successfully', data: enrichedOrder });
@@ -974,163 +575,57 @@ exports.retryPayment = async (req, res, next) => {
   }
 };
 
-// Collect Payment at counter (Admin)
-exports.collectPayment = async (req, res, next) => {
+// Apply Online Payment (Customer)
+exports.applyOnlinePayment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { collectedVia, utr } = req.body; // collectedVia: CASH or ONLINE
+    const { utr, deviceId } = req.body;
 
-    if (!['CASH', 'ONLINE'].includes(collectedVia)) {
-      return res.status(400).json({ success: false, message: 'Invalid collection method. Use CASH or ONLINE.' });
+    if (!utr || utr.length < 6) {
+      return res.status(400).json({ success: false, message: 'Valid 6-digit UTR is mandatory for online payments.' });
     }
 
-    const order = await Order.findOne({ _id: id, restaurant: req.userId });
+    const order = await Order.findOne({ _id: id, deviceId });
 
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found or access denied.' });
     }
 
-    if (order.paymentStatus === 'VERIFIED') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order already marked as paid'
-      });
-    }
+    // Update payment details to Online
+    order.collectedVia = 'ONLINE';
+    if (!order.paymentVerificationRequestbycustomer) order.paymentVerificationRequestbycustomer = {};
+    order.paymentVerificationRequestbycustomer.applied = true;
+    order.paymentVerificationRequestbycustomer.appliedUTR = utr.substring(0, 6);
+    order.paymentStatus = 'PENDING';
+    order.isCollected = false;
+    order.paymentVerificationRequestbycustomer.retrycount = (order.paymentVerificationRequestbycustomer.retrycount || 0) + 1;
 
-    order.paymentStatus = 'VERIFIED';
-    order.collectedVia = collectedVia;
-    order.collectedAt = new Date();
-    order.collectedBy = req.userId;
-    order.paymentDueStatus = 'CLEAR';
-    
-    if (utr) {
-      order.utr = utr.substring(0, 6);
-    }
-
-    await order.save();
-
-    // Verify existing TRANSACTION and Sync
-    try {
-      const LedgerTransaction = require('../models/LedgerTransaction');
-      await LedgerTransaction.updateMany(
-        { orderId: order._id, type: 'PAYMENT' },
-        { status: 'VERIFIED' }
-      );
-      await ledgerService.syncDailyLedger(req.userId, order.createdAt);
-    } catch (ledgerError) {
-      console.error('Failed to verify transaction:', ledgerError);
-    }
-
-    const enrichedOrder = await getEnrichedOrder(order);
-
-    // Emit update to admin and customer
-    const io = req.app.get('io');
-    if (io) {
-      const adminRoom = (order.restaurant || req.userId)?.toString();
-      const customerRoom = order.deviceId;
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      if (customerRoom) {
-        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-        io.to(customerRoom).emit('paymentVerified', enrichedOrder);
-      }
-    }
-
-    res.json({
-      success: true,
-      message: `Payment collected via ${collectedVia}`,
-      data: enrichedOrder
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Reject order (admin)
-exports.rejectOrder = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-
-    const order = await Order.findOne({ _id: id, restaurant: req.userId });
-
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    // Can only reject placed orders (not ACCEPTED or COMPLETED)
-    if (order.status !== 'PLACED') {
-      return res.status(400).json({
-        success: false,
-        message: 'Can only reject orders that have not been approved yet'
-      });
-    }
-
-    // Guard against double-processing if the order was already rejected
-    if (order.status === 'REJECTED') {
-      return res.status(400).json({ success: false, message: 'Order is already rejected' });
-    }
-
-    order.status = 'REJECTED';
-    order.rejectionReason = reason || 'Order rejected by admin';
-    
-    // Auto-Refund if it was already verified
-    if (order.paymentStatus === 'VERIFIED') {
-      order.refund = {
-        status: 'PENDING',
-        method: order.paymentMethod,
-        amount: order.totalAmount
-      };
-    } else {
-      order.refund = {
-        status: 'NOT_REQUIRED'
-      };
-    }
-    
     await order.save();
 
     const enrichedOrder = await getEnrichedOrder(order);
 
-    // Emit update to admin and customer
+    // Emit update events
     const io = req.app.get('io');
     if (io) {
       const adminRoom = order.restaurant.toString();
       const customerRoom = order.deviceId;
-      console.log(`[Socket] Order rejected: ${id}`);
       io.to(adminRoom).emit('orderUpdate', enrichedOrder);
-      io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
-    }
-
-    // Financial Logic: Revert the payment with a REFUND transaction
-    if (order.paymentStatus === 'VERIFIED') {
-      try {
-        await ledgerService.recordTransaction({
-          order,
-          type: 'REFUND',
-          amount: -order.totalAmount,
-          mode: order.paymentMethod,
-          status: 'VERIFIED' // Reversal is immediate
-        });
-      } catch (ledgerError) {
-        console.error('Failed to record reversal:', ledgerError);
+      if (customerRoom) {
+        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
       }
     }
 
-
-    res.json({
-      success: true,
-      message: 'Order rejected',
-      data: enrichedOrder
+    res.json({ 
+      success: true, 
+      message: 'Online payment applied successfully. Please wait for restaurant verification.', 
+      data: enrichedOrder 
     });
   } catch (error) {
     next(error);
   }
 };
+
+
 
 // Cancel order (customer)
 exports.cancelOrder = async (req, res, next) => {
@@ -1170,35 +665,8 @@ exports.cancelOrder = async (req, res, next) => {
     order.status = 'CANCELLED';
     order.cancellationReason = reason || bodyReason || 'Order cancelled by customer';
     
-    // Handle refund if already verified
-    if (order.paymentStatus === 'VERIFIED') {
-      order.refund = {
-        status: 'PENDING',
-        method: order.paymentMethod,
-        amount: order.totalAmount
-      };
-    } else {
-      order.refund = {
-        status: 'NOT_REQUIRED'
-      };
-    }
-
     await order.save();
 
-    // Financial Logic: Revert the payment with a REFUND transaction
-    if (order.paymentStatus === 'VERIFIED') {
-      try {
-        await ledgerService.recordTransaction({
-          order,
-          type: 'REFUND',
-          amount: -order.totalAmount,
-          mode: order.paymentMethod,
-          status: 'VERIFIED'
-        });
-      } catch (ledgerError) {
-        console.error('Failed to record reversal on cancellation:', ledgerError);
-      }
-    }
 
     const enrichedOrder = await getEnrichedOrder(order);
 
@@ -1220,91 +688,63 @@ exports.cancelOrder = async (req, res, next) => {
   }
 };
 
-// Process refund for cancelled/rejected orders
-exports.processRefund = async (req, res, next) => {
+
+
+// Get order by ID (Public - no auth required)
+exports.getOrderByIdPublic = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { refundMethod, refundAmount } = req.body;
-
-    const order = await Order.findOne({ _id: id, restaurant: req.userId });
-
+    const order = await Order.findById(id);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
-
-    // Can only refund cancelled or rejected orders that were paid
-    if (!['cancelled', 'rejected'].includes(order.status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Can only refund cancelled or rejected orders'
-      });
-    }
-
-    if (order.paymentStatus !== 'VERIFIED') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order was not paid, no refund needed'
-      });
-    }
-
-    if (order.refund && order.refund.status === 'refunded') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order has already been refunded'
-      });
-    }
-
-    // Validate refund amount
-    const amount = parseFloat(refundAmount);
-    if (isNaN(amount) || amount <= 0 || amount > order.totalAmount) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid refund amount'
-      });
-    }
-
-    // Update order with refund details
-    order.refund = {
-        status: 'refunded',
-        method: refundMethod,
-        amount: amount,
-        processedAt: new Date()
-    };
-    await order.save();
-
-    // Record Refund Transaction
-    try {
-      await ledgerService.recordTransaction({
-        order,
-        type: 'REFUND',
-        amount: -amount,
-        mode: refundMethod,
-        status: 'VERIFIED'
-      });
-    } catch (ledgerError) {
-      console.error('Failed to record refund transaction:', ledgerError);
-    }
-
     const enrichedOrder = await getEnrichedOrder(order);
-
-    // Emit real-time event to restaurant admin and customer
-    const io = req.app.get('io');
-    if (io) {
-      io.to(order.restaurant.toString()).emit('orderUpdate', enrichedOrder);
-      io.to(order.deviceId).emit('orderRefundUpdate', enrichedOrder);
-      io.to(order.deviceId).emit('orderStatusUpdate', enrichedOrder);
-    }
-
-    res.json({
-      success: true,
-      message: `Refund of ₹${amount.toFixed(2)} processed successfully`,
-      data: enrichedOrder
-    });
+    res.json({ success: true, data: enrichedOrder });
   } catch (error) {
     next(error);
   }
 };
 
+// Get order by ID (Admin - requires auth)
+exports.getOrderById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const order = await Order.findOne({ _id: id, restaurant: req.userId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    const enrichedOrder = await getEnrichedOrder(order);
+    res.json({ success: true, data: enrichedOrder });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Submit feedback for an order
+exports.submitFeedback = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { rating, comment, deviceId } = req.body;
+
+    const query = { _id: id };
+    if (deviceId) query.deviceId = deviceId;
+
+    const order = await Order.findOne(query);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    order.feedback = {
+      rating,
+      comment,
+      submittedAt: new Date()
+    };
+
+    await order.save();
+
+    const enrichedOrder = await getEnrichedOrder(order);
+    res.json({ success: true, message: 'Feedback submitted successfully', data: enrichedOrder });
+  } catch (error) {
+    next(error);
+  }
+};

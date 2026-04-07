@@ -14,24 +14,11 @@ const dailyLedgerSchema = new mongoose.Schema({
     index: true
   },
 
-  // Financial Summary (Truth from LedgerTransactions)
-  counter: {
-    received: { type: Number, default: 0 },
-    verified: { type: Number, default: 0 },
-    pending: { type: Number, default: 0 },
-    refunded: { type: Number, default: 0 },
-    balance: { type: Number, default: 0 }
-  },
-  online: {
-    received: { type: Number, default: 0 },
-    verified: { type: Number, default: 0 },
-    pending: { type: Number, default: 0 },
-    refunded: { type: Number, default: 0 },
-    balance: { type: Number, default: 0 }
-  },
+  // Financial Summary (flattened)
+  cashReceivedAmount: { type: Number, default: 0 },
+  onlineReceivedAmount: { type: Number, default: 0 },
+  pendingAmount: { type: Number, default: 0 },
   total: {
-    received: { type: Number, default: 0 },
-    refunded: { type: Number, default: 0 },
     netBalance: { type: Number, default: 0 },
     unpaidDues: { type: Number, default: 0 },
     totalRevenue: { type: Number, default: 0 }
@@ -42,7 +29,14 @@ const dailyLedgerSchema = new mongoose.Schema({
     totalOrders: { type: Number, default: 0 },
     servedOrders: { type: Number, default: 0 },
     rejectedOrders: { type: Number, default: 0 },
-    cancelledOrders: { type: Number, default: 0 }
+    cancelledOrders: { type: Number, default: 0 },
+    orderType: {
+      dineIn: { type: Number, default: 0 },
+      takeaway: { type: Number, default: 0 },
+      delivery: { type: Number, default: 0 }
+    },
+    pendingPayments: { type: Number, default: 0 },
+    dueOrders: { type: Number, default: 0 }
   },
 
   // Business Analytics (Truth from Order items)
