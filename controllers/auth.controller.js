@@ -11,6 +11,7 @@ const { registerOtpTemplate, resetPasswordOtpTemplate, deleteAccountOtpTemplate 
 const { detailedReportEmailTemplate, accountDeletionExportTemplate } = require('../templates/detailedReportEmail');
 const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require('../utils/cloudinary');
 const { logActivity } = require('../utils/auditLogger');
+const { sendDetailedReportEmail } = require('../utils/reportHelper');
 
 // Generate tokens
 const generateTokens = (userId) => {
