@@ -220,6 +220,7 @@ exports.handleOrderAction = async (req, res, next) => {
       const room = enrichedOrder.restaurant.toString();
       io.to(room).emit('orderUpdate', enrichedOrder);
       if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT') io.to(room).emit('paymentVerified', enrichedOrder);
+      if (action === 'REJECT_ORDER') io.to(room).emit('orderRejected', enrichedOrder);
       
       // Notify Customer
       io.to(enrichedOrder.deviceId).emit('orderStatusUpdate', enrichedOrder);
@@ -250,9 +251,20 @@ exports.getOrdersByDevice = async (req, res, next) => {
       query.status = status;
     }
 
+    // Projection for faster queries - only get needed fields
+    const projection = {
+      _id: 1, orderNumber: 1, tableNumber: 1, customerName: 1, numberOfPersons: 1,
+      orderType: 1, totalAmount: 1, status: 1, paymentStatus: 1, paymentMethod: 1,
+      collectedVia: 1, createdAt: 1, updatedAt: 1, items: 1, deviceId: 1, utr: 1,
+      specialInstructions: 1, paymentDueStatus: 1, rejectionReason: 1,
+      cancellationReason: 1, unpaidReason: 1, feedback: 1, restaurant: 1
+    };
+
     const orders = await Order.find(query)
+      .select(projection)
       .sort({ createdAt: -1 })
-      .limit(20);
+      .limit(50)
+      .lean();
 
     const enrichedOrders = await Promise.all(
       orders.map(o => getEnrichedOrder(o))
@@ -354,10 +366,10 @@ exports.getOrdersByTable = async (req, res, next) => {
   }
 };
 
-// Get all orders (admin)
+// Get all orders (admin) - Optimized with optional stats
 exports.getAllOrders = async (req, res, next) => {
   try {
-    const { search, status, date, month, year, paymentMethod } = req.query;
+    const { search, status, date, month, year, paymentMethod, includeStats = 'true' } = req.query;
 
     // Build query - convert userId to ObjectId for aggregation compatibility
     const mongoose = require('mongoose');
@@ -367,7 +379,6 @@ exports.getAllOrders = async (req, res, next) => {
     if (search) {
       const searchNum = parseInt(search);
       if (!isNaN(searchNum)) {
-        // Search by orderNumber (exact match for 5-digit) or tableNumber
         query.$or = [
           { orderNumber: search },
           { tableNumber: searchNum }
@@ -389,137 +400,71 @@ exports.getAllOrders = async (req, res, next) => {
     if (date) {
       const startOfDay = ledgerService.normalizeToISTMidnight(date);
       const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000 - 1);
-      query.createdAt = {
-        $gte: startOfDay,
-        $lte: endOfDay
-      };
+      query.createdAt = { $gte: startOfDay, $lte: endOfDay };
     } else if (month && year) {
       const startOfMonth = new Date(parseInt(year), parseInt(month) - 1, 1);
       const endOfMonth = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59);
-      query.createdAt = {
-        $gte: startOfMonth,
-        $lte: endOfMonth
-      };
+      query.createdAt = { $gte: startOfMonth, $lte: endOfMonth };
     }
 
-    // 1. Fetch orders (limited) with lean for speed
+    // Projection for faster queries
+    const projection = {
+      _id: 1, orderNumber: 1, tableNumber: 1, customerName: 1, numberOfPersons: 1,
+      orderType: 1, totalAmount: 1, status: 1, paymentStatus: 1, paymentMethod: 1,
+      collectedVia: 1, createdAt: 1, updatedAt: 1, items: 1, deviceId: 1, utr: 1,
+      specialInstructions: 1, paymentDueStatus: 1, rejectionReason: 1,
+      cancellationReason: 1, unpaidReason: 1, feedback: 1
+    };
+
+    // 1. Fetch orders with projection (much faster)
     const orders = await Order.find(query)
+      .select(projection)
       .sort({ createdAt: -1 })
       .limit(100)
       .lean();
 
-    // 2. Aggregate stats in MongoDB (single query, much faster)
-    const statsPipeline = [
-      { $match: query },
-      {
-        $group: {
-          _id: null,
-          totalOrders: { $sum: 1 },
-          placed: { $sum: { $cond: [{ $eq: ['$status', 'PLACED'] }, 1, 0] } },
-          accepted: { $sum: { $cond: [{ $eq: ['$status', 'ACCEPTED'] }, 1, 0] } },
-          servingPending: { $sum: { $cond: [{ $in: ['$status', ['PLACED', 'ACCEPTED']] }, 1, 0] } },
-          completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
-          rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
-          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'CANCELLED'] }, 1, 0] } },
-          totalRevenue: {
-            $sum: {
-              $cond: [
-                { $eq: ['$paymentStatus', 'VERIFIED'] },
-                '$totalAmount',
-                0
-              ]
-            }
-          },
-          unpaidDuesAmount: {
-            $sum: {
-              $cond: [
-                { $eq: ['$paymentStatus', 'UNPAID'] },
-                '$totalAmount',
-                0
-              ]
-            }
-          },
-          duesPending: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'UNPAID'] }, 1, 0] } },
-          
-          onlinePending: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'ONLINE'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, 1, 0] } },
-          onlinePendingAmount: { 
-            $sum: { 
-              $cond: [{ $and: [{ $eq: ['$paymentMethod', 'ONLINE'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] 
-            } 
-          },
-
-          cashPending: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'CASH'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, 1, 0] } },
-          cashPendingAmount: { 
-            $sum: { 
-              $cond: [{ $and: [{ $eq: ['$paymentMethod', 'CASH'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] 
-            } 
-          },
-
-          counterGross: {
-            $sum: {
-              $cond: [
-                { $and: [
-                  { $eq: ['$collectedVia', 'CASH'] },
-                  { $eq: ['$paymentStatus', 'VERIFIED'] }
-                ]},
-                '$totalAmount',
-                0
-              ]
-            }
-          },
-          onlineGross: {
-            $sum: {
-              $cond: [
-                { $and: [
-                  { $eq: ['$collectedVia', 'ONLINE'] },
-                  { $eq: ['$paymentStatus', 'VERIFIED'] }
-                ]},
-                '$totalAmount',
-                0
-              ]
-            }
-          },
+    // 2. Calculate stats only if requested (saves time when just viewing orders)
+    let stats = null;
+    if (includeStats === 'true') {
+      const statsPipeline = [
+        { $match: query },
+        { $limit: 5000 }, // Limit for stats calculation
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            placed: { $sum: { $cond: [{ $eq: ['$status', 'PLACED'] }, 1, 0] } },
+            accepted: { $sum: { $cond: [{ $eq: ['$status', 'ACCEPTED'] }, 1, 0] } },
+            servingPending: { $sum: { $cond: [{ $in: ['$status', ['PLACED', 'ACCEPTED']] }, 1, 0] } },
+            completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
+            rejected: { $sum: { $cond: [{ $eq: ['$status', 'REJECTED'] }, 1, 0] } },
+            cancelled: { $sum: { $cond: [{ $eq: ['$status', 'CANCELLED'] }, 1, 0] } },
+            totalRevenue: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'VERIFIED'] }, '$totalAmount', 0] } },
+            unpaidDuesAmount: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'UNPAID'] }, '$totalAmount', 0] } },
+            duesPending: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'UNPAID'] }, 1, 0] } },
+            onlinePending: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'ONLINE'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, 1, 0] } },
+            onlinePendingAmount: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'ONLINE'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] } },
+            cashPending: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'CASH'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, 1, 0] } },
+            cashPendingAmount: { $sum: { $cond: [{ $and: [{ $eq: ['$paymentMethod', 'CASH'] }, { $ne: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] } },
+            counterGross: { $sum: { $cond: [{ $and: [{ $eq: ['$collectedVia', 'CASH'] }, { $eq: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] } },
+            onlineGross: { $sum: { $cond: [{ $and: [{ $eq: ['$collectedVia', 'ONLINE'] }, { $eq: ['$paymentStatus', 'VERIFIED'] }] }, '$totalAmount', 0] } }
+          }
         }
-      }
-    ];
+      ];
 
-    const [statsResult] = await Order.aggregate(statsPipeline);
-    const stats = statsResult || {
-      totalOrders: 0, placed: 0, accepted: 0, completed: 0, rejected: 0, cancelled: 0,
-      servingPending: 0,
-      totalRevenue: 0, 
-      onlinePending: 0, onlinePendingAmount: 0,
-      cashPending: 0, cashPendingAmount: 0,
-      duesPending: 0, unpaidDuesAmount: 0,
-      counterGross: 0, onlineGross: 0
-    };
-
-    const enrichedOrders = orders.map(o => ({
-      ...o,
-      transactions: [] // Maintain property for interface compatibility
-    }));
+      const [statsResult] = await Order.aggregate(statsPipeline);
+      stats = statsResult || {
+        totalOrders: 0, placed: 0, accepted: 0, completed: 0, rejected: 0, cancelled: 0,
+        servingPending: 0, totalRevenue: 0, onlinePending: 0, onlinePendingAmount: 0,
+        cashPending: 0, cashPendingAmount: 0, duesPending: 0, unpaidDuesAmount: 0,
+        counterGross: 0, onlineGross: 0
+      };
+    }
 
     res.json({
       success: true,
-      data: enrichedOrders,
-      stats: {
-        totalOrders: stats.totalOrders || 0,
-        placed: stats.placed || 0,
-        accepted: stats.accepted || 0,
-        servingPending: stats.servingPending || 0,
-        completed: stats.completed || 0,
-        rejected: stats.rejected || 0,
-        cancelled: stats.cancelled || 0,
-        totalRevenue: stats.totalRevenue || 0,
-        onlinePending: stats.onlinePending || 0,
-        onlinePendingAmount: stats.onlinePendingAmount || 0,
-        cashPending: stats.cashPending || 0,
-        cashPendingAmount: stats.cashPendingAmount || 0,
-        duesPending: stats.duesPending || 0,
-        unpaidDuesAmount: stats.unpaidDuesAmount || 0,
-        counterGross: stats.counterGross || 0,
-        onlineGross: stats.onlineGross || 0
-      }
+      data: orders,
+      stats: stats || undefined
     });
   } catch (error) {
     next(error);

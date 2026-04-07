@@ -61,6 +61,9 @@ const dailyLedgerSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
+// Compound index for faster lookups by restaurant + date
+dailyLedgerSchema.index({ restaurant: 1, date: 1 }, { unique: true });
+
 // IST Normalization
 const normalizeToISTMidnight = (date) => {
   const d = new Date(date);
@@ -77,10 +80,19 @@ dailyLedgerSchema.pre('save', function(next) {
   next();
 });
 
-// Static method to get or create daily ledger
+// Static method to get or create daily ledger - optimized with projection
 dailyLedgerSchema.statics.getOrCreateLedger = async function(date, restaurantId) {
   const normalizedDate = normalizeToISTMidnight(date);
-  let ledger = await this.findOne({ date: normalizedDate, restaurant: restaurantId });
+  
+  // Select only needed fields for faster query (must keep as Mongoose doc for .save())
+  let ledger = await this.findOne(
+    { date: normalizedDate, restaurant: restaurantId },
+    {
+      restaurant: 1, date: 1, cashReceivedAmount: 1, onlineReceivedAmount: 1,
+      pendingAmount: 1, total: 1, counts: 1, soldItems: 1, hourlyBreakdown: 1,
+      lastUpdated: 1, createdAt: 1, updatedAt: 1
+    }
+  );
 
   if (!ledger) {
     // Initialize hourly breakdown

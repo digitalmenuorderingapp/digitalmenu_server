@@ -145,8 +145,6 @@ const generateReport = async (restaurant, orders, options = {}) => {
         }
     });
 
-    const totalNetBalance = stats.cash + stats.online;
-
     // Header Metadata
     txSheet.mergeCells('A1:D1');
     txSheet.getCell('A1').value = `DigitalMenu - Financial Report: ${restaurant.restaurantName}`;
@@ -158,33 +156,31 @@ const generateReport = async (restaurant, orders, options = {}) => {
     txSheet.getCell('B3').value = formatDateIST(new Date()) + ' ' + formatTimeIST(new Date());
 
     // Summary Box
-    const summaryLabels = ['Total Cash', 'Total Online', 'Unpaid (Served)', 'Settled Balance', 'Total Revenue'];
-    const summaryValues = [stats.cash, stats.online, stats.dues, totalNetBalance, stats.revenue];
+    const summaryLabels = ['Total Cash', 'Total Online', 'Total Revenue', 'Unpaid (Served)'];
+    const summaryValues = [stats.cash, stats.online, stats.revenue, stats.dues];
     
     summaryLabels.forEach((label, i) => {
         txSheet.getRow(5).getCell(i + 1).value = label;
         txSheet.getRow(5).getCell(i + 1).font = { bold: true, size: 9, color: { argb: 'FF6B7280' } };
-        txSheet.getRow(5).getCell(i + 1).alignment = { horizontal: 'center' };
+        txSheet.getRow(5).getCell(i + 1).alignment = { horizontal: 'center', vertical: 'middle' };
 
         const valCell = txSheet.getRow(6).getCell(i + 1);
         valCell.value = summaryValues[i];
         valCell.numFmt = '₹#,##0.00';
         valCell.font = { bold: true, size: 11, color: { argb: 'FF111827' } };
-        valCell.alignment = { horizontal: 'center' };
+        valCell.alignment = { horizontal: 'center', vertical: 'middle' };
         
-        if (label === 'Settled Balance') valCell.font.color = { argb: 'FF059669' };
-        if (label === 'Total Revenue') valCell.font.color = { argb: 'FF4F46E5' };
+        if (label === 'Total Revenue') valCell.font.color = { argb: 'FF059669' };
         if (label === 'Unpaid (Served)') valCell.font.color = { argb: 'FFDC2626' };
     });
 
     // Transactions Table Headers (row 12)
     const txHeaders = [
         'Date', 'Time', 'Order No', 'Table No', 'Customer Name', 'Persons', 
-        'Items', 'Qty', 'Order Type', 'Payment Mode', 'Collected Via', 
+        'Items', 'Qty', 'Order Type', 'Collected Via', 
         'Payment Status', 'Order Status', 'Order Value', 'Online Amount', 
-        'Cash Amount', 'Settled Amount', 'Settled Balance', 
-        'Revenue', 'Unpaid Amount', 'Rejection Reason', 'Cancel Reason', 
-        'Unpaid Reason', 'Feedback', 'Rating'
+        'Cash Amount', 'Revenue', 'Running Balance', 'Unpaid Amount', 
+        'Rejection Reason', 'Cancel Reason', 'Unpaid Reason', 'Feedback', 'Rating'
     ];
     
     const headerRow = txSheet.getRow(12);
@@ -221,16 +217,14 @@ const generateReport = async (restaurant, orders, options = {}) => {
             (order.items || []).map(i => `${i.name} x${i.quantity}`).join('\n'),
             (order.items || []).reduce((sum, item) => sum + (item.quantity || 0), 0),
             order.orderType || 'DINE-IN',
-            order.collectedVia || 'N/A', // Using collectedVia as payment mode
             order.collectedVia || 'N/A',
             order.paymentStatus || 'PENDING',
             order.status || 'N/A',
             orderValue,
             onlineAmt,
             cashAmt,
-            settledAmt,
-            currentSettledBalance,
             revenue,
+            currentSettledBalance,
             (revenue > 0 && !isVerified) ? revenue : 0,
             order.rejectionReason || '',
             order.cancellationReason || '',
@@ -242,12 +236,12 @@ const generateReport = async (restaurant, orders, options = {}) => {
         const row = txSheet.addRow(rowData);
         row.getCell(7).alignment = { wrapText: true };
         row.getCell(24).alignment = { wrapText: true }; 
-        [14, 15, 16, 17, 18, 19, 20].forEach(colIndex => {
+        [13, 14, 15, 16, 17, 18].forEach(colIndex => {
             row.getCell(colIndex).numFmt = '₹#,##0.00';
         });
 
-        applyStatusHighlights(row.getCell(12), rowData[11], 'PAYMENT_STATUS');
-        applyStatusHighlights(row.getCell(13), rowData[12], 'ORDER_STATUS');
+        applyStatusHighlights(row.getCell(11), rowData[10], 'PAYMENT_STATUS');
+        applyStatusHighlights(row.getCell(12), rowData[11], 'ORDER_STATUS');
     });
 
     applyZebraStriping(txSheet, 13, txSheet.rowCount, txHeaders.length);
@@ -274,10 +268,86 @@ const generateReport = async (restaurant, orders, options = {}) => {
 
     Object.entries(dailyData).sort().forEach(([date, d]) => {
         const r = dailySheet.addRow([date, d.count, d.cash, d.online, (d.cash + d.online)]);
-        [3, 4, 5].forEach(c => r.getCell(c).numFmt = '₹#,##0.00');
+        [3, 4, 5].forEach(c => {
+            r.getCell(c).numFmt = '₹#,##0.00';
+            r.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+        
+        // Center align all cells in the row
+        r.eachCell({ includeEmpty: true }, (cell) => {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
     });
     dailySheet.columns = dayHeaders.map(() => ({ width: 18 }));
     applyZebraStriping(dailySheet, 2, dailySheet.rowCount, dayHeaders.length);
+
+    // --- Items Breakdown Sheet ---
+    const itemsSheet = workbook.addWorksheet('Items Breakdown');
+    const itemsHeaders = ['Date', 'Item Name', 'Orders Count', 'Quantity', 'Price', 'Total'];
+    const itemsHeaderRow = itemsSheet.addRow(itemsHeaders);
+    itemsHeaderRow.font = { bold: true };
+    itemsHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF59E0B' } }; // Amber
+    
+    // Aggregate items data
+    const itemsData = orders.reduce((acc, order) => {
+        const date = formatDateIST(order.createdAt);
+        const orderItems = order.items || [];
+        
+        orderItems.forEach(item => {
+            const key = `${date}-${item.name}`;
+            if (!acc[key]) {
+                acc[key] = {
+                    date,
+                    itemName: item.name,
+                    ordersCount: 0,
+                    quantity: 0,
+                    price: item.price || 0
+                };
+            }
+            acc[key].ordersCount += 1;
+            acc[key].quantity += item.quantity || 0;
+        });
+        return acc;
+    }, {});
+
+    // Sort by date then item name
+    Object.values(itemsData)
+        .sort((a, b) => {
+            if (a.date !== b.date) return a.date.localeCompare(b.date);
+            return a.itemName.localeCompare(b.itemName);
+        })
+        .forEach(item => {
+            const total = item.quantity * item.price;
+            const r = itemsSheet.addRow([
+                item.date,
+                item.itemName,
+                item.ordersCount,
+                item.quantity,
+                item.price,
+                total
+            ]);
+            [5, 6].forEach(c => r.getCell(c).numFmt = '₹#,##0.00'); // Price and Total
+        });
+
+    itemsSheet.columns = [
+        { width: 15 }, // Date
+        { width: 30 }, // Item Name
+        { width: 15 }, // Orders Count
+        { width: 12 }, // Quantity
+        { width: 12 }, // Price
+        { width: 15 }  // Total
+    ];
+    
+    // Center align all cells in items sheet
+    itemsSheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        if (rowNumber > 1) { // Skip header
+            row.eachCell({ includeEmpty: true }, (cell) => {
+                cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            });
+        }
+    });
+    
+    applyZebraStriping(itemsSheet, 2, itemsSheet.rowCount, itemsHeaders.length);
 
     // --- Finalize Buffer ---
     return await workbook.xlsx.writeBuffer();
