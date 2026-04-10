@@ -101,7 +101,7 @@ exports.handleOrderAction = async (req, res, next) => {
 
     switch (action) {
       case "VERIFY_PAYMENT":
-        if (order.collectedVia !== 'ONLINE') {
+        if (order.collectedVia !== 'ONLINE' && order.paymentMethod !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be verified." });
         }
         update.paymentStatus = "VERIFIED";
@@ -114,14 +114,11 @@ exports.handleOrderAction = async (req, res, next) => {
         break;
 
       case "REQUEST_RETRY":
-        if (order.collectedVia !== 'ONLINE') {
+        if (order.collectedVia !== 'ONLINE' && order.paymentMethod !== 'ONLINE') {
           return res.status(400).json({ success: false, message: "Only ONLINE payments can be marked for retry." });
         }
         if (order.paymentStatus === 'VERIFIED') {
           return res.status(400).json({ success: false, message: "Payment is already verified. Retry not needed." });
-        }
-        if ((order.paymentVerificationRequestbycustomer?.retrycount || 0) >= 3) {
-          return res.status(400).json({ success: false, message: "Max retry limit (3) reached. Please mark as UNPAID." });
         }
         update.paymentStatus = "PENDING";
         update.paymentVerificationRequestbycustomer = {
@@ -420,7 +417,8 @@ exports.getAllOrders = async (req, res, next) => {
       orderType: 1, totalAmount: 1, status: 1, paymentStatus: 1, paymentMethod: 1,
       collectedVia: 1, createdAt: 1, updatedAt: 1, items: 1, deviceId: 1, utr: 1,
       specialInstructions: 1, paymentDueStatus: 1, rejectionReason: 1,
-      cancellationReason: 1, unpaidReason: 1, feedback: 1
+      cancellationReason: 1, unpaidReason: 1, feedback: 1,
+      paymentVerificationRequestbycustomer: 1
     };
 
     // 1. Fetch orders with projection (much faster)

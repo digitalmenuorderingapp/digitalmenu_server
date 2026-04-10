@@ -118,7 +118,6 @@ const orderSchema = new mongoose.Schema({
   collectedVia: {
     type: String,
     enum: ['CASH', 'ONLINE'],
-    default: 'CASH',
     set: v => (v === 'COUNTER' || v === 'CASH' || v === 'cash') ? 'CASH' : v?.toUpperCase()
   },
   collectedAt: {
