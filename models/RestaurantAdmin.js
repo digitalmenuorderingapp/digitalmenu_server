@@ -12,10 +12,12 @@ const refreshTokenSchema = new mongoose.Schema({
   issuedAt: { type: Date, default: Date.now },
   expiresAt: { type: Date },
   revokedAt: { type: Date },
+  loginMethod: { type: String, enum: ['local', 'google'] },
   sessions: [{
     loggedInAt: { type: Date, required: true },
     loggedOutAt: { type: Date },
-    duration: { type: Number } // Seconds
+    duration: { type: Number }, // Seconds
+    loginMethod: { type: String, enum: ['local', 'google'] }
   }]
 }, { _id: false });
 
@@ -28,42 +30,24 @@ const restaurantAdminSchema = new mongoose.Schema({
     trim: true,
     match: [/\S+@\S+\.\S+/, 'Please enter a valid email']
   },
+  // Google Sign-In support
+  googleId: {
+    type: String,
+    default: null,
+    sparse: true,
+    unique: true
+  },
   password: {
     type: String,
-    required: [true, 'Password is required'],
     minlength: [6, 'Password must be at least 6 characters']
   },
-  isVerified: {
+  isPasswordSet: {
     type: Boolean,
     default: false
   },
-  verificationCode: {
-    type: String,
-    default: null
-  },
-  verificationCodeExpires: {
-    type: Date,
-    default: null
-  },
-  resetPasswordOtp: {
-    type: String,
-    default: null
-  },
-  resetPasswordOtpExpires: {
-    type: Date,
-    default: null
-  },
-  deleteAccountOtp: {
-    type: String,
-    default: null
-  },
-  deleteAccountOtpExpires: {
-    type: Date,
-    default: null
-  },
   // Embedded refresh tokens for multi-device session management
   refreshTokens: [refreshTokenSchema],
-  
+
   // Restaurant Details
   restaurantName: {
     type: String,
@@ -89,37 +73,24 @@ const restaurantAdminSchema = new mongoose.Schema({
     type: String,
     default: null
   },
-  role: {
-    type: String,
-    enum: ['user', 'admin', 'moderator'], // 'user' is legacy, we use 'admin' mostly now
-    default: 'admin'
-  },
-  otp: {
-    type: String,
-    default: null
-  },
-  otpExpires: {
-    type: Date,
-    default: null
-  },
   subscription: {
-    type: { 
-      type: String, 
-      enum: ['trial', 'paid', 'free'], 
-      default: 'trial' 
+    type: {
+      type: String,
+      enum: ['trial', 'paid', 'free'],
+      default: 'trial'
     },
-    status: { 
-      type: String, 
-      enum: ['active', 'inactive', 'expired'], 
-      default: 'active' 
+    status: {
+      type: String,
+      enum: ['active', 'inactive', 'expired'],
+      default: 'active'
     },
-    startDate: { 
-      type: Date, 
-      default: Date.now 
+    startDate: {
+      type: Date,
+      default: Date.now
     },
-    expiryDate: { 
-      type: Date, 
-      default: null 
+    expiryDate: {
+      type: Date,
+      default: null
     }
   },
   lastLogin: Date,
@@ -134,7 +105,15 @@ const restaurantAdminSchema = new mongoose.Schema({
     sparse: true,
     trim: true,
     uppercase: true
-  }
+  },
+  // Reports stored on Cloudinary
+  reports: [{
+    year: Number,
+    month: Number,
+    url: String,
+    publicId: String,
+    generatedAt: Date
+  }]
 }, {
   timestamps: true,
 });
@@ -146,19 +125,25 @@ restaurantAdminSchema.index({ 'refreshTokens.tokenHash': 1 });
 // Hash password before saving
 restaurantAdminSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  this.password = await bcrypt.hash(this.password, 12);
+
+  if (this.password) {
+    this.isPasswordSet = true;
+    this.password = await bcrypt.hash(this.password, 12);
+  }
+
   next();
 });
 
-// Compare password method
+// Compare password method (only for local auth)
 restaurantAdminSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password) return false;
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
 // Static method to mark inactive devices offline
 restaurantAdminSchema.statics.markInactiveDevicesOffline = async function () {
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-  
+
   return this.updateMany(
     { 'refreshTokens.lastSeen': { $lt: fifteenMinutesAgo }, 'refreshTokens.isOnline': true },
     { $set: { 'refreshTokens.$[elem].isOnline': false } },

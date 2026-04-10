@@ -121,6 +121,10 @@ const orderSchema = new mongoose.Schema({
     default: 'CASH',
     set: v => (v === 'COUNTER' || v === 'CASH' || v === 'cash') ? 'CASH' : v?.toUpperCase()
   },
+  collectedAt: {
+    type: Date,
+    default: null
+  },
 
   // Flags
   paymentVerificationRequestbycustomer: {

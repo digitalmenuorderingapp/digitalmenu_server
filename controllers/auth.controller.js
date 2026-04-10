@@ -1,17 +1,21 @@
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const Order = require('../models/Order');
 const DailyLedger = require('../models/DailyLedger');
 const MenuItem = require('../models/MenuItem');
 const Table = require('../models/Table');
 const ExcelJS = require('exceljs');
+const crypto = require('crypto');
 const { hashToken } = require('../utils/token');
-const emailService = require('../services/email.service');
-const { registerOtpTemplate, resetPasswordOtpTemplate, deleteAccountOtpTemplate } = require('../templates/otpTemplates');
-const { detailedReportEmailTemplate, accountDeletionExportTemplate } = require('../templates/detailedReportEmail');
 const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require('../utils/cloudinary');
 const { logActivity } = require('../utils/auditLogger');
-const { sendDetailedReportEmail } = require('../utils/reportHelper');
+
+const googleClient = new OAuth2Client(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`
+);
 
 // Generate tokens
 const generateTokens = (userId) => {
@@ -46,6 +50,327 @@ const accessCookieOptions = {
   sameSite: isProduction ? 'none' : 'lax',
   maxAge: 15 * 60 * 1000 // 15 minutes
 };
+
+// ========== GOOGLE SIGN-IN ==========
+
+// Verify Google token and login/signup user
+exports.googleSignIn = async (req, res, next) => {
+  try {
+    const { access_token, deviceId, deviceName } = req.body;
+
+    if (!access_token) {
+      return res.status(400).json({ success: false, message: 'Google access token is required' });
+    }
+
+    // Verify Google token
+    const ticket = await googleClient.verifyIdToken({
+      idToken: access_token,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name, picture } = payload;
+
+    // Find or create user
+    let user = await RestaurantAdmin.findOne({ email });
+
+    if (!user) {
+      // Generate shortId
+      const { generateShortId } = require('../utils/id.util');
+      let shortId;
+      let isUnique = false;
+      let attempts = 0;
+
+      while (!isUnique && attempts < 10) {
+        shortId = generateShortId();
+        const existing = await RestaurantAdmin.findOne({ shortId });
+        if (!existing) isUnique = true;
+        attempts++;
+      }
+
+      const trialDays = 90;
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + trialDays);
+      expiryDate.setHours(23, 59, 59, 999);
+
+      const DeletedRestaurant = require('../models/DeletedRestaurant');
+      const preservedRecord = await DeletedRestaurant.findOne({ email });
+
+      let initialSubscription = {
+        type: 'trial',
+        status: 'active',
+        startDate: new Date(),
+        expiryDate: expiryDate
+      };
+
+      if (preservedRecord && preservedRecord.subscription) {
+        initialSubscription = preservedRecord.subscription;
+      }
+
+      // Create new user with Google auth
+      user = await RestaurantAdmin.create({
+        email,
+        googleId,
+                ownerName: name || '',
+        logo: picture || null,
+        shortId: shortId,
+        subscription: initialSubscription
+      });
+    } else if (!user.googleId) {
+      // Link Google to existing local account
+      user.googleId = googleId;
+      await user.save();
+    }
+
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id.toString());
+
+    // Hash and store refresh token with device info
+    const tokenHash = hashToken(refreshToken);
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+    // Remove any existing tokens for this device
+    user.refreshTokens = user.refreshTokens.filter(rt => rt.deviceId !== deviceId);
+
+    // Add new refresh token
+    user.refreshTokens.push({
+      tokenHash,
+      deviceId: deviceId || 'unknown',
+      deviceName: deviceName || 'Unknown Device',
+      ipAddress,
+      lastSeen: new Date(),
+      isOnline: true,
+      issuedAt: new Date(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      loginMethod: 'google',
+      sessions: [{
+        loggedInAt: new Date(),
+        loginMethod: 'google'
+      }]
+    });
+
+    await user.save();
+
+    // Set cookies
+    res.cookie('accessToken', accessToken, accessCookieOptions);
+    res.cookie('refreshToken', refreshToken, cookieOptions);
+
+    // Log activity
+    await logActivity({
+      userId: user._id,
+      restaurantId: user._id,
+      action: 'GOOGLE_LOGIN',
+      entityType: 'USER',
+      details: { deviceId, deviceName, ipAddress }
+    });
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      user: {
+        _id: user._id,
+        email: user.email,
+        restaurantName: user.restaurantName,
+        ownerName: user.ownerName,
+        logo: user.logo,
+        role: user.role,
+        subscription: user.subscription
+      }
+    });
+  } catch (error) {
+    console.error('Google Sign-In error:', error);
+    res.status(401).json({
+      success: false,
+      message: 'Google authentication failed',
+      error: error.message
+    });
+  }
+};
+
+// ========== GOOGLE OAUTH REDIRECT FLOW ==========
+
+// Generate Google OAuth URL and redirect
+exports.googleAuth = async (req, res) => {
+  try {
+    const { deviceId, deviceName } = req.query;
+    const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
+    
+    const scopes = [
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/userinfo.email'
+    ];
+    
+    // Pass deviceInfo smoothly through Google using State 
+    const stateObj = { 
+      deviceId: deviceId || 'unknown', 
+      deviceName: deviceName || req.headers['user-agent'] || 'Unknown Browser' 
+    };
+    const stateParam = Buffer.from(JSON.stringify(stateObj)).toString('base64');
+    
+    const authUrl = googleClient.generateAuthUrl({
+      access_type: 'offline',
+      scope: scopes,
+      prompt: 'consent',
+      redirect_uri: redirectUri,
+      state: stateParam
+    });
+    
+    res.redirect(authUrl);
+  } catch (error) {
+    console.error('Google Auth URL generation error:', error);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    res.redirect(`${frontendUrl}/auth?mode=register&error=google_auth_failed`);
+  }
+};
+
+// Handle Google OAuth callback
+exports.googleCallback = async (req, res) => {
+  try {
+    const { code } = req.query;
+    
+    if (!code) {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${frontendUrl}/auth?mode=register&error=no_code`);
+    }
+    
+    const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
+    
+    // Exchange code for tokens
+    const { tokens } = await googleClient.getToken({
+      code,
+      redirect_uri: redirectUri
+    });
+    
+    // Verify ID token
+    const ticket = await googleClient.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+    
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name, picture } = payload;
+    
+    // Get device info from query params (passed through state) or use defaults
+    let deviceId = 'unknown';
+    let deviceName = 'Unknown Browser';
+    
+    if (req.query.state) {
+      try {
+        const stateObj = JSON.parse(Buffer.from(req.query.state, 'base64').toString('ascii'));
+        if (stateObj.deviceId) deviceId = stateObj.deviceId;
+        if (stateObj.deviceName) deviceName = stateObj.deviceName;
+      } catch (e) {
+        deviceName = req.headers['user-agent'] || 'Unknown Browser';
+      }
+    } else {
+      deviceName = req.headers['user-agent'] || 'Unknown Browser';
+    }
+    
+    // Find or create user
+    let user = await RestaurantAdmin.findOne({ email });
+    
+    if (!user) {
+      // Generate shortId
+      const { generateShortId } = require('../utils/id.util');
+      let shortId;
+      let isUnique = false;
+      let attempts = 0;
+
+      while (!isUnique && attempts < 10) {
+        shortId = generateShortId();
+        const existing = await RestaurantAdmin.findOne({ shortId });
+        if (!existing) isUnique = true;
+        attempts++;
+      }
+
+      const trialDays = 90;
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + trialDays);
+      expiryDate.setHours(23, 59, 59, 999);
+
+      const DeletedRestaurant = require('../models/DeletedRestaurant');
+      const preservedRecord = await DeletedRestaurant.findOne({ email });
+
+      let initialSubscription = {
+        type: 'trial',
+        status: 'active',
+        startDate: new Date(),
+        expiryDate: expiryDate
+      };
+
+      if (preservedRecord && preservedRecord.subscription) {
+        initialSubscription = preservedRecord.subscription;
+      }
+
+      // Create new user with Google auth
+      user = await RestaurantAdmin.create({
+        email,
+        googleId,
+                ownerName: name || '',
+        logo: picture || null,
+        shortId: shortId,
+        subscription: initialSubscription
+      });
+    } else if (!user.googleId) {
+      // Link Google to existing local account
+      user.googleId = googleId;
+      await user.save();
+    }
+    
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id.toString());
+    
+    // Hash and store refresh token
+    const tokenHash = hashToken(refreshToken);
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    
+    // Remove any existing tokens for this device
+    user.refreshTokens = user.refreshTokens.filter(rt => rt.deviceId !== deviceId);
+    
+    // Add new refresh token
+    user.refreshTokens.push({
+      tokenHash,
+      deviceId: deviceId || 'unknown',
+      deviceName: deviceName || 'Unknown Device',
+      ipAddress,
+      lastSeen: new Date(),
+      isOnline: true,
+      issuedAt: new Date(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      loginMethod: 'google',
+      sessions: [{
+        loggedInAt: new Date(),
+        loginMethod: 'google'
+      }]
+    });
+    
+    await user.save();
+    
+    // Set cookies
+    res.cookie('accessToken', accessToken, accessCookieOptions);
+    res.cookie('refreshToken', refreshToken, cookieOptions);
+    
+    // Log activity
+    await logActivity({
+      userId: user._id,
+      restaurantId: user._id,
+      action: 'GOOGLE_LOGIN',
+      entityType: 'USER',
+      details: { deviceId, deviceName, ipAddress }
+    });
+    
+    // Redirect to frontend dashboard
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    res.redirect(`${frontendUrl}/admin/dashboard`);
+    
+  } catch (error) {
+    console.error('Google Callback error:', error);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    res.redirect(`${frontendUrl}/auth?mode=register&error=google_callback_failed`);
+  }
+};
+
+// ========== LOCAL AUTH (Legacy Support) ==========
 
 // Helper: Check and update subscription status
 const checkSubscriptionStatus = async (user) => {
@@ -87,59 +412,29 @@ const checkSubscriptionStatus = async (user) => {
   };
 };
 
-// Register (Now sends OTP)
-exports.register = async (req, res, next) => {
+// Set/Update password (only users originally from Google or via Google)
+exports.setPassword = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const userId = req.userId;
 
-    // Check if user exists
-    const existingUser = await RestaurantAdmin.findOne({ email });
-    if (existingUser) {
-      if (existingUser.isVerified) {
-        return res.status(400).json({
-          success: false,
-          message: 'User already exists and is verified. Please login.'
-        });
-      }
-      // If user exists but not verified, update password and send new OTP
-      existingUser.password = password;
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      existingUser.verificationCode = otp;
-      existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000;
-      await existingUser.save();
-
-      await emailService.sendEmail({
-        to: email,
-        subject: 'DigitalMenu - Verification Code',
-        html: registerOtpTemplate(otp)
-      });
-
-      return res.status(200).json({
-        success: true,
-        message: 'A new verification code has been sent to your email.'
+    if (!password || password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters'
       });
     }
 
-    // Create user (unverified)
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const user = await RestaurantAdmin.create({
-      email,
-      password,
-      verificationCode: otp,
-      verificationCodeExpires: Date.now() + 10 * 60 * 1000
-    });
+    const user = await RestaurantAdmin.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
-    // Send OTP
-    await emailService.sendEmail({
-      to: email,
-      subject: 'DigitalMenu - Verification Code',
-      html: registerOtpTemplate(otp)
-    });
+    // Set password and allow local login
+    user.password = password;
+    await user.save();
 
-    res.status(201).json({
-      success: true,
-      message: 'Registration successful. Please verify your email with the OTP sent.'
-    });
+    res.json({ success: true, message: 'Password updated successfully.' });
   } catch (error) {
     next(error);
   }
@@ -186,13 +481,21 @@ exports.verifyOtp = async (req, res, next) => {
     user.verificationCode = undefined;
     user.verificationCodeExpires = undefined;
 
-    // Set trial initialization
-    user.subscription = {
+    const DeletedRestaurant = require('../models/DeletedRestaurant');
+    const preservedRecord = await DeletedRestaurant.findOne({ email });
+    let initialSubscription = {
       type: 'trial',
       status: 'active',
       startDate: new Date(),
       expiryDate: expiryDate
     };
+
+    if (preservedRecord && preservedRecord.subscription) {
+      initialSubscription = preservedRecord.subscription;
+    }
+
+    // Set trial initialization
+    user.subscription = initialSubscription;
 
     await user.save();
 
@@ -211,7 +514,8 @@ exports.verifyOtp = async (req, res, next) => {
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       isOnline: true,
       lastSeen: new Date(),
-      sessions: [{ loggedInAt: new Date() }]
+      loginMethod: 'local',
+      sessions: [{ loggedInAt: new Date(), loginMethod: 'local' }]
     };
 
     user.refreshTokens.push(tokenData);
@@ -250,7 +554,7 @@ exports.verifyOtp = async (req, res, next) => {
   }
 };
 
-// Login
+// Login with password (for staff and users who set password after Google Sign-In)
 exports.login = async (req, res, next) => {
   try {
     const { email, password, deviceId, deviceName } = req.body;
@@ -264,21 +568,21 @@ exports.login = async (req, res, next) => {
       });
     }
 
+    // Check if user has password set (Google users without password need to set it first)
+    if (!user.password) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please use Google Sign-In, or set a password in your restaurant settings first.',
+        requirePassword: true
+      });
+    }
+
     // Check password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
-      });
-    }
-
-    // Check if verified
-    if (!user.isVerified) {
-      return res.status(403).json({
-        success: false,
-        message: 'Your email is not verified. Please verify it to login.',
-        notVerified: true
       });
     }
 
@@ -301,7 +605,8 @@ exports.login = async (req, res, next) => {
       token.revokedAt = undefined;
       token.isOnline = true;
       token.lastSeen = new Date();
-      token.sessions.push({ loggedInAt: new Date() });
+      token.loginMethod = 'local';
+      token.sessions.push({ loggedInAt: new Date(), loginMethod: 'local' });
 
       // Keep only last 7 days of sessions
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -316,7 +621,8 @@ exports.login = async (req, res, next) => {
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         isOnline: true,
         lastSeen: new Date(),
-        sessions: [{ loggedInAt: new Date() }]
+        loginMethod: 'local',
+        sessions: [{ loggedInAt: new Date(), loginMethod: 'local' }]
       });
     }
 
@@ -551,11 +857,13 @@ exports.listActiveDevices = async (req, res, next) => {
       data: devices.map(d => ({
         deviceId: d.deviceId,
         deviceName: d.deviceName,
+        userAgent: d.deviceName, // Map deviceName to userAgent for frontend compatibility
         ipAddress: d.ipAddress,
         issuedAt: d.issuedAt,
         expiresAt: d.expiresAt,
         isOnline: d.isOnline,
         lastSeen: d.lastSeen,
+        loginMethod: d.loginMethod || 'local',
         revokedAt: d.revokedAt
       }))
     });
@@ -672,11 +980,31 @@ exports.resendOtp = async (req, res, next) => {
     user.verificationCodeExpires = Date.now() + 10 * 60 * 1000;
     await user.save();
 
-    await emailService.sendEmail({
-      to: email,
-      subject: 'DigitalMenu - Verification Code',
-      html: registerOtpTemplate(otp)
-    });
+    // Try to send email
+    let emailSent = false;
+    let emailError = null;
+    try {
+      const result = await emailService.sendEmail({
+        to: email,
+        subject: 'DigitalMenu - Verification Code',
+        html: registerOtpTemplate(otp)
+      });
+      emailSent = result && (result.sent || result.messageId || result.id);
+      if (!emailSent) {
+        emailError = result?.error || 'Email service returned no confirmation';
+      }
+    } catch (err) {
+      emailError = err.message;
+      console.error('[ResendOTP] Email send failed:', err.message);
+    }
+
+    if (!emailSent) {
+      return res.status(500).json({
+        success: false,
+        message: `Failed to send verification email: ${emailError}. Please try again or contact support.`,
+        emailError: emailError
+      });
+    }
 
     res.json({ success: true, message: 'A new verification code has been sent.' });
   } catch (error) {
@@ -773,62 +1101,10 @@ exports.removeLogo = async (req, res, next) => {
   }
 };
 
-// Send delete account OTP
-exports.sendDeleteAccountOtp = async (req, res, next) => {
-  try {
-    const userId = req.userId;
-    const user = await RestaurantAdmin.findById(userId);
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.deleteAccountOtp = otp;
-    user.deleteAccountOtpExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-    await user.save();
-
-    // Try to send email, but don't fail if email service is down
-    let emailSent = false;
-    try {
-      const emailInfo = await emailService.sendEmail({
-        to: user.email,
-        subject: 'DigitalMenu - Account Deletion Verification',
-        html: deleteAccountOtpTemplate(otp)
-      });
-      emailSent = !!(emailInfo && emailInfo.messageId);
-    } catch (emailError) {
-      console.error('Email service error (delete account OTP):', emailError.message);
-      // Continue - OTP is saved, user can request again or contact support
-    }
-
-    if (!emailSent) {
-      return res.status(503).json({
-        success: false,
-        message: 'Email service temporarily unavailable. Please try again later or contact support.',
-        emailSent: false
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Account deletion OTP sent to your email',
-      emailSent: true
-    });
-  } catch (error) {
-    console.error('Send delete account OTP error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Failed to send email. Please try again.',
-      error: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-};
-
 // Delete account with data export
 exports.deleteAccount = async (req, res, next) => {
   try {
-    const { otp } = req.body;
+    const { captcha, reason } = req.body;
     const userId = req.userId;
 
     const user = await RestaurantAdmin.findById(userId);
@@ -836,19 +1112,15 @@ exports.deleteAccount = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    if (user.deleteAccountOtp !== otp || user.deleteAccountOtpExpires < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+    if (captcha !== 'DELETE') {
+      return res.status(400).json({ success: false, message: 'Invalid confirmation phrase' });
+    }
+
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ success: false, message: 'Deletion reason is required' });
     }
 
     // Import ReportService for full export
-    const ReportService = require('../services/report.service');
-    const moment = require('moment-timezone');
-
-    // Fetch all related orders
-    const orders = await Order.find({
-      restaurant: userId
-    }).lean();
-
     // Get menu items for additional sheet and image deletion
     const menuItems = await MenuItem.find({ restaurant: userId }).lean();
 
@@ -883,23 +1155,17 @@ exports.deleteAccount = async (req, res, next) => {
 
     await Promise.allSettled(imageDeletePromises);
 
-    // Send unified report via helper
-    const oldestOrder = await Order.findOne({ restaurant: userId }).sort({ createdAt: 1 });
-    const reportDateRange = {
-      from: oldestOrder ? moment(oldestOrder.createdAt).tz('Asia/Kolkata').format('YYYY-MM-DD') : moment().format('YYYY-MM-DD'),
-      to: moment().tz('Asia/Kolkata').format('YYYY-MM-DD'),
-      fromDate: oldestOrder ? oldestOrder.createdAt : new Date('2000-01-01'),
-      toDate: new Date()
-    };
-
-    await sendDetailedReportEmail({
-      restaurant: user,
-      emailType: 'DELETION',
-      dateRange: reportDateRange,
-      menuItems: menuItems,
-      subject: 'DigitalMenu - Your Complete Data Export (Account Deletion)',
-      customSummary: { totalMenuItems: menuItems.length }
-    });
+    // Store original subscription and email in DeletedRestaurant for potential future recovery
+    const DeletedRestaurant = require('../models/DeletedRestaurant');
+    await DeletedRestaurant.findOneAndUpdate(
+      { email: user.email },
+      { 
+        email: user.email, 
+        subscription: user.subscription,
+        deletionReason: reason
+      },
+      { upsert: true, new: true }
+    );
 
     // Delete all user data
     await Promise.all([
@@ -916,7 +1182,7 @@ exports.deleteAccount = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Your account has been deleted. A complete data export has been sent to your email.'
+      message: 'Your account and all related data have been permanently deleted.'
     });
   } catch (error) {
     next(error);

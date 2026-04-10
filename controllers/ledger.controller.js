@@ -5,6 +5,9 @@ const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
 const { reportEmailTemplate } = require('../templates/reportEmail');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
+const { searchReports, getFileFromCloudinary, uploadRawToCloudinary } = require('../utils/cloudinary');
+const ReportService = require('../services/report.service');
+const moment = require('moment-timezone');
 
 /**
  * Helper to transform DailyLedger document to match frontend expectation (nested structure)
@@ -227,6 +230,163 @@ exports.exportReportToMail = async (req, res, next) => {
         console.error('[ManualExport] Background export failed:', bgError);
       }
     })();
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get available reports from Cloudinary
+exports.getAvailableReports = async (req, res, next) => {
+  try {
+    const userId = req.userId;
+    const restaurant = await RestaurantAdmin.findById(userId).lean();
+    
+    if (!restaurant) {
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const shortId = restaurant.shortId || restaurant._id.toString();
+    const folder = `digitalmenu/reports/${shortId}`;
+    
+    // Search for reports in Cloudinary
+    const resources = await searchReports(folder);
+    
+    // Format response as month-key -> url mapping
+    const reports = {};
+    resources.forEach(resource => {
+      // Extract month and year from filename
+      const filename = resource.public_id.split('/').pop();
+      const match = filename.match(/report-(\d{4})-(\d{2})/);
+      if (match) {
+        const [, year, month] = match;
+        reports[`${year}-${month}`] = resource.secure_url;
+      }
+    });
+
+    res.json({
+      success: true,
+      reports
+    });
+  } catch (error) {
+    console.error('[AvailableReports] Error:', error);
+    res.json({
+      success: true,
+      reports: {}
+    });
+  }
+};
+
+// Download report from Cloudinary
+exports.downloadReportFromCloudinary = async (req, res, next) => {
+  try {
+    const { month, year } = req.query;
+    const userId = req.userId;
+    
+    if (!month || !year) {
+      return res.status(400).json({ success: false, message: 'Month and year are required' });
+    }
+
+    const restaurant = await RestaurantAdmin.findById(userId).lean();
+    if (!restaurant) {
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const shortId = restaurant.shortId || restaurant._id.toString();
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    const publicId = `digitalmenu/reports/${shortId}/report-${monthKey}`;
+
+    try {
+      // Try to get file from Cloudinary
+      const buffer = await getFileFromCloudinary(publicId);
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="ledger-report-${monthKey}.xlsx"`);
+      res.send(buffer);
+    } catch (cloudinaryError) {
+      console.error('[DownloadReport] Cloudinary fetch failed:', cloudinaryError);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Report not found in cloud storage. Please generate for current month only.' 
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Generate report and return directly (for current month)
+exports.generateAndDownloadReport = async (req, res, next) => {
+  try {
+    const { month, year } = req.body;
+    const userId = req.userId;
+    
+    if (!month || !year) {
+      return res.status(400).json({ success: false, message: 'Month and year are required' });
+    }
+
+    const restaurant = await RestaurantAdmin.findById(userId).lean();
+    if (!restaurant) {
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const now = moment().tz('Asia/Kolkata');
+    const currentMonth = now.month() + 1; // 1-indexed
+    const currentYear = now.year();
+
+    // Validate it's current month
+    if (parseInt(month) !== currentMonth || parseInt(year) !== currentYear) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Live generation only available for current month. Previous months are read-only from cloud storage.' 
+      });
+    }
+
+    // Generate date range for the month
+    const startDate = moment().year(year).month(month - 1).startOf('month').toDate();
+    const endDate = moment().year(year).month(month - 1).endOf('month').toDate();
+
+    // Fetch orders for the period
+    const orders = await Order.find({
+      restaurant: userId,
+      createdAt: { $gte: startDate, $lte: endDate }
+    }).sort({ createdAt: 1 }).lean({ virtuals: true });
+
+    // Generate report buffer
+    const reportBuffer = await ReportService.generateReport(
+      restaurant,
+      orders,
+      {
+        dateRange: { 
+          from: moment(startDate).format('YYYY-MM-DD'), 
+          to: moment(endDate).format('YYYY-MM-DD') 
+        },
+        reportType: 'Monthly',
+        includeOnlyVerified: true
+      }
+    );
+
+    // Also upload to Cloudinary for future downloads
+    (async () => {
+      try {
+        const shortId = restaurant.shortId || restaurant._id.toString();
+        const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+        const filename = `report-${monthKey}`;
+        const folder = `digitalmenu/reports/${shortId}`;
+        
+        await uploadRawToCloudinary(reportBuffer, filename, folder);
+        console.log(`[GenerateReport] Uploaded to Cloudinary: ${folder}/${filename}`);
+      } catch (uploadError) {
+        console.error('[GenerateReport] Failed to upload to Cloudinary:', uploadError);
+        // Don't fail the download if upload fails
+      }
+    })();
+
+    // Send file to client
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="ledger-report-${monthKey}.xlsx"`);
+    res.send(reportBuffer);
 
   } catch (error) {
     next(error);

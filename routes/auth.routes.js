@@ -6,18 +6,18 @@ const { validateRegister, validateLogin } = require('../middleware/validation.mi
 const { trackUserActivity } = require('../middleware/userTracker');
 const upload = require('../utils/multer');
 
-router.post('/register', validateRegister, authController.register);
+// Auth routes
+router.post('/google-signin', authController.googleSignIn);
+router.get('/google', authController.googleAuth);           // Initiate Google OAuth
+router.get('/google/callback', authController.googleCallback); // Handle Google callback
 router.post('/login', validateLogin, authController.login);
 router.post('/logout', authController.logout);
+
+// Set password (for Google users to create password for staff login)
+router.post('/set-password', protect, authController.setPassword);
 router.post('/refresh', authController.refresh);
 router.get('/me', protect, trackUserActivity, authController.getMe);
 router.get('/subscription', protect, authController.getSubscription);
-
-// OTP & Password Reset
-router.post('/verify-otp', authController.verifyOtp);
-router.post('/forgot-password', authController.forgotPassword);
-router.post('/reset-password', authController.resetPassword);
-router.post('/resend-otp', authController.resendOtp);
 
 // Active devices routes
 router.get('/devices', protect, authController.listActiveDevices);
@@ -28,8 +28,12 @@ router.put('/restaurant', protect, trackUserActivity, authController.updateResta
 router.put('/restaurant/logo', protect, trackUserActivity, upload.single('logo'), authController.uploadLogo);
 router.delete('/restaurant/logo', protect, trackUserActivity, authController.removeLogo);
 
-// Delete account routes
-router.post('/delete-account-otp', protect, authController.sendDeleteAccountOtp);
+// Reports (Legacy - moved to ledger routes if needed, or pending implementation)
+// router.get('/reports/monthly/:year/:month', protect, authController.generateMonthlyReport);
+// router.get('/reports/current', protect, authController.getCurrentMonthReport);
+// router.get('/reports/download/:year/:month', protect, authController.downloadReport);
+
+// Delete account (Captcha confirmation required)
 router.post('/delete-account', protect, authController.deleteAccount);
 
 module.exports = router;

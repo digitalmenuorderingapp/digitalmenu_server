@@ -1,78 +1,65 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-// Lazy initialization of transporter to ensure env vars are loaded
-let transporter = null;
-
-const getTransporter = () => {
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      connectionTimeout: 10000, // 10 second timeout
-      socketTimeout: 10000,
-      greetingTimeout: 10000,
-    });
-  }
-  return transporter;
-};
+// Initialize Resend with API key from env
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 exports.sendEmailWithAttachments = async (to, subject, text, attachments, html = '') => {
   try {
-    // Skip if SMTP not configured
-    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
-      console.log('[Email] SMTP not configured, skipping email to:', to);
-      return { skipped: true, reason: 'SMTP not configured' };
+    if (!resend) {
+      console.log('[Email] Resend not configured, skipping email to:', to);
+      return { skipped: true, reason: 'Resend not configured' };
     }
 
-    const mailOptions = {
-      from: `"DigitalMenu Reports" <${process.env.SMTP_USER}>`,
+    const { data, error } = await resend.emails.send({
+      from: process.env.FROM_EMAIL || 'digitalmenu.orderingapp@zohomail.in',
       to,
       subject,
-      text,
-      html,
-      attachments,
-    };
+      html: html || text,
+      attachments: attachments?.map(att => ({
+        filename: att.filename,
+        content: att.content
+      }))
+    });
 
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('Message sent: %s', info.messageId);
-    return info;
+    if (error) {
+      console.error('[Email] Resend error:', error);
+      return { error: error.message, sent: false };
+    }
+
+    console.log('[Email] Sent:', data?.id);
+    return { id: data?.id, sent: true };
   } catch (error) {
     console.error('[Email] Failed to send email:', error.message);
-    // Don't throw - gracefully fail so app continues
     return { error: error.message, sent: false };
   }
 };
 
 /**
  * Send a generic HTML email
- * Mirrors the pattern from the reference project
  */
 exports.sendEmail = async ({ to, subject, html }) => {
   try {
-    // Skip if SMTP not configured
-    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
-      console.log('[Email] SMTP not configured, skipping email to:', to);
-      return { skipped: true, reason: 'SMTP not configured' };
+    if (!resend) {
+      console.log('[Email] Resend not configured, skipping email to:', to);
+      return { skipped: true, reason: 'Resend not configured' };
     }
 
-    const mailOptions = {
-      from: process.env.SMTP_USER,
+    const { data, error } = await resend.emails.send({
+      from: process.env.FROM_EMAIL || 'digitalmenu.orderingapp@zohomail.in',
       to,
       subject,
       html
-    };
+    });
 
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('Email sent successfully to:', to);
-    return info;
+    if (error) {
+      console.error('[Email] Resend error:', error);
+      return { error: error.message, sent: false };
+    }
+
+    console.log('[Email] Sent successfully to:', to);
+    return { id: data?.id, sent: true };
   } catch (error) {
     console.error('[Email] Failed to send email:', error.message);
-    // Don't throw - gracefully fail so app continues
     return { error: error.message, sent: false };
   }
 };

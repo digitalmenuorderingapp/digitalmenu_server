@@ -21,4 +21,13 @@ router.post('/recalculate', ledgerController.recalculateLedger);
 // Report Export
 router.post('/exportreporttomail', ledgerController.exportReportToMail);
 
+// Available Reports from Cloudinary
+router.get('/available-reports', ledgerController.getAvailableReports);
+
+// Download report from Cloudinary (for previous months)
+router.get('/download-report', ledgerController.downloadReportFromCloudinary);
+
+// Generate and download report (for current month only)
+router.post('/generate-and-download', ledgerController.generateAndDownloadReport);
+
 module.exports = router;

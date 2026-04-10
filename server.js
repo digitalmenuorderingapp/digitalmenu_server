@@ -4,6 +4,13 @@ const cors = require('cors');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const rateLimit = require('express-rate-limit');
+const slowDown = require('express-slow-down');
+const hpp = require('hpp');
+const compression = require('compression');
 const { connectDB } = require('./config/db');
 const socketService = require('./services/socket.service');
 const { initCron } = require('./services/cron.service');
@@ -43,6 +50,65 @@ const checkOrigin = (origin, callback) => {
 const io = socketService.init(server, checkOrigin);
 app.set('io', io);
 serverMonitor.setIo(io);
+
+// Security middleware
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Stricter rate limiting for auth routes
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 requests per windowMs for auth
+  message: 'Too many authentication attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/', limiter);
+app.use('/api/auth', authLimiter);
+
+// Slow down middleware (gradual slowdown instead of hard blocking)
+const speedLimiter = slowDown({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  delayAfter: 50, // Allow 50 requests per 15min before slowing down
+  delayMs: () => 500, // Add 500ms delay after delayAfter requests
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/', speedLimiter);
+
+// Data sanitization
+app.use(mongoSanitize());
+app.use(xss());
+
+// HTTP Parameter Pollution protection
+app.use(hpp());
+
+// Compression middleware
+app.use(compression());
 
 // Middleware
 if (process.env.NODE_ENV !== 'production') {
@@ -92,7 +158,7 @@ setInterval(async () => {
     }
   } catch (error) {
     if (error.name !== 'MongooseError' || !error.message.includes('buffering timed out')) {
-        console.error('Error marking devices offline:', error);
+      console.error('Error marking devices offline:', error);
     }
   }
 }, 60000);

@@ -180,7 +180,8 @@ const generateReport = async (restaurant, orders, options = {}) => {
         'Items', 'Qty', 'Order Type', 'Collected Via', 
         'Payment Status', 'Order Status', 'Order Value', 'Online Amount', 
         'Cash Amount', 'Revenue', 'Running Balance', 'Unpaid Amount', 
-        'Rejection Reason', 'Cancel Reason', 'Unpaid Reason', 'Feedback', 'Rating'
+        'Rejection Reason', 'Cancel Reason', 'Unpaid Reason', 'Feedback', 'Rating',
+        'Collected at'
     ];
     
     const headerRow = txSheet.getRow(12);
@@ -207,6 +208,15 @@ const generateReport = async (restaurant, orders, options = {}) => {
 
         let revenue = (isServed && !isRejected) ? orderValue : 0;
 
+        // Determine collected at date/time
+        const collectedAt = isVerified ? (order.collectedAt || order.updatedAt || order.createdAt) : null;
+        const collectedAtStr = collectedAt ? `${formatDateIST(collectedAt)} ${formatTimeIST(collectedAt)}` : '-';
+        
+        // Check if more than 1 day old
+        const now = moment().tz('Asia/Kolkata');
+        const collectedMoment = collectedAt ? moment(collectedAt).tz('Asia/Kolkata') : null;
+        const isMoreThanOneDay = collectedMoment ? now.diff(collectedMoment, 'days') >= 1 : false;
+
         const rowData = [
             formatDateIST(order.createdAt),
             formatTimeIST(order.createdAt),
@@ -230,7 +240,8 @@ const generateReport = async (restaurant, orders, options = {}) => {
             order.cancellationReason || '',
             order.unpaidReason || '',
             order.feedback?.comment || '',
-            order.feedback?.rating || '-'
+            order.feedback?.rating || '-',
+            collectedAtStr
         ];
 
         const row = txSheet.addRow(rowData);
@@ -242,6 +253,29 @@ const generateReport = async (restaurant, orders, options = {}) => {
 
         applyStatusHighlights(row.getCell(11), rowData[10], 'PAYMENT_STATUS');
         applyStatusHighlights(row.getCell(12), rowData[11], 'ORDER_STATUS');
+        
+        // Apply conditional formatting to 'Collected at' column (column 24)
+        const collectedAtCell = row.getCell(24);
+        const orderStatus = String(order.status).toUpperCase();
+        const paymentStatus = String(order.paymentStatus).toUpperCase();
+        
+        if (isMoreThanOneDay && isVerified) {
+            // More than 1 day - Red background
+            collectedAtCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+            collectedAtCell.font = { color: { argb: 'FFDC2626' }, bold: true };
+        } else if (paymentStatus === 'UNPAID') {
+            // Unpaid - Red background
+            collectedAtCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+            collectedAtCell.font = { color: { argb: 'FFDC2626' }, bold: true };
+        } else if (orderStatus === 'REJECTED') {
+            // Rejected - Light grey background
+            collectedAtCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+            collectedAtCell.font = { color: { argb: 'FF6B7280' } };
+        } else if (orderStatus === 'CANCELLED') {
+            // Cancelled - Light yellow background
+            collectedAtCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+            collectedAtCell.font = { color: { argb: 'FFD97706' } };
+        }
     });
 
     applyZebraStriping(txSheet, 13, txSheet.rowCount, txHeaders.length);

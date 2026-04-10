@@ -106,6 +106,7 @@ exports.handleOrderAction = async (req, res, next) => {
         }
         update.paymentStatus = "VERIFIED";
         update.collectedVia = "ONLINE";
+        update.collectedAt = new Date();
         update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
         update.paymentVerificationRequestbycustomer = undefined;
         
@@ -172,6 +173,7 @@ exports.handleOrderAction = async (req, res, next) => {
         }
         update.paymentStatus = "VERIFIED";
         update.collectedVia = payload.method;
+        update.collectedAt = new Date();
         if (payload.method === 'ONLINE') {
           update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
         } else {
@@ -186,6 +188,7 @@ exports.handleOrderAction = async (req, res, next) => {
         const clearMethod = payload.method || "CASH";
         update.paymentStatus = "VERIFIED";
         update.collectedVia = clearMethod;
+        update.collectedAt = new Date();
         if (clearMethod === 'ONLINE') {
           update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
         } else {

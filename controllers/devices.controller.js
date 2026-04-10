@@ -22,11 +22,13 @@ exports.getDevices = async (req, res, next) => {
         isOnline: device.isOnline,
         lastSeen: device.lastSeen,
         ipAddress: device.ipAddress,
+        loginMethod: device.loginMethod,
         revokedAt: device.revokedAt,
         sessions: sortedSessions.map(session => ({
           loggedInAt: session.loggedInAt,
           loggedOutAt: session.loggedOutAt,
-          duration: session.duration
+          duration: session.duration,
+          loginMethod: session.loginMethod
         }))
       };
     });
