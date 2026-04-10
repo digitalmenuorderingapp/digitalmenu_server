@@ -10,7 +10,7 @@ exports.protect = async (req, res, next) => {
 
     if (!token) {
       // Diagnostic log for all environments
-      console.warn(`[AUTH] 401 - Missing access token (Path: ${req.originalUrl}, HasRefreshToken: ${!!refreshToken})`);
+      console.warn(`[AUTH] 401 - Missing access token (Path: ${req.originalUrl}, HasRefreshToken: ${!!refreshToken}, Secure: ${req.secure}, Protocol: ${req.protocol}, IP: ${req.ip})`);
       
       return res.status(401).json({
         success: false,

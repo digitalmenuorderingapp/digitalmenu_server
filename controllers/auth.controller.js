@@ -154,10 +154,9 @@ exports.googleSignIn = async (req, res, next) => {
     await user.save();
 
     // Set cookies
-    console.log('[GoogleSignIn] Setting cookies - isProduction:', isProduction, 'cookieOptions:', cookieOptions);
+    console.log(`[AUTH] Google SignIn - Host: ${req.headers.host}, Secure: ${req.secure}, Protocol: ${req.protocol}`);
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
-    console.log('[GoogleSignIn] Cookies set successfully');
 
     // Log response headers for debugging
     const originalJson = res.json;
@@ -358,6 +357,7 @@ exports.googleCallback = async (req, res) => {
     await user.save();
     
     // Set cookies
+    console.log(`[AUTH] Google Callback - Host: ${req.headers.host}, Secure: ${req.secure}, Protocol: ${req.protocol}`);
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
     

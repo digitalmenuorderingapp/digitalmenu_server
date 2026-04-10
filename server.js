@@ -20,7 +20,7 @@ const serverMonitor = require('./services/serverMonitor.service');
 dotenv.config();
 
 const app = express();
-app.set('trust proxy', 2);
+app.set('trust proxy', true);
 const server = http.createServer(app);
 
 const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
