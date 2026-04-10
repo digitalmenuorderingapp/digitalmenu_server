@@ -13,7 +13,7 @@ const connectDB = async () => {
   while (attempt < maxRetries) {
     attempt++;
     try {
-      const conn = await mongoose.connect(process.env.MONGODB_URI_LOCAL || 'mongodb://localhost:27017/digitalmenu');
+      const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digitalmenu');
       console.log(`✅ MongoDB Connected`);
 
       // Ensure Superadmin Account
