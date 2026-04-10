@@ -69,36 +69,7 @@ app.use(helmet({
   },
 }));
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// Stricter rate limiting for auth routes
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs for auth
-  message: 'Too many authentication attempts, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.use('/api/', limiter);
-app.use('/api/auth', authLimiter);
-
-// Slow down middleware (gradual slowdown instead of hard blocking)
-const speedLimiter = slowDown({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  delayAfter: 50, // Allow 50 requests per 15min before slowing down
-  delayMs: () => 500, // Add 500ms delay after delayAfter requests
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api/', speedLimiter);
+// Rate limiting and speed limiters removed as requested for diagnostics.
 
 // Data sanitization
 app.use(mongoSanitize());
