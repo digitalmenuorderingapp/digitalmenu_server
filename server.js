@@ -20,7 +20,7 @@ const serverMonitor = require('./services/serverMonitor.service');
 dotenv.config();
 
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', true);
 const server = http.createServer(app);
 
 const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
@@ -81,7 +81,7 @@ const limiter = rateLimit({
 // Stricter rate limiting for auth routes
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 requests per windowMs for auth
+  max: 100, // Limit each IP to 100 requests per windowMs for auth
   message: 'Too many authentication attempts, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,

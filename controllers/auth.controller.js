@@ -731,9 +731,7 @@ exports.refresh = async (req, res, next) => {
     });
 
     if (!user) {
-      if (process.env.NODE_ENV === 'development') {
-        console.warn(`[AUTH] Refresh - User or Token not found in DB`);
-      }
+      console.warn(`[AUTH] Refresh - User ${decoded.userId} or Token Hash ${hashed.substring(0, 10)}... not found in DB`);
       return res.status(401).json({
         success: false,
         message: 'Invalid session'
@@ -743,9 +741,7 @@ exports.refresh = async (req, res, next) => {
     const tokenDoc = user.refreshTokens.find(t => t.tokenHash === hashed);
 
     if (!tokenDoc || tokenDoc.revokedAt) {
-      if (process.env.NODE_ENV === 'development') {
-        console.warn(`[AUTH] Refresh - Token revoked in DB`);
-      }
+      console.warn(`[AUTH] Refresh - Token revoked or missing for User: ${decoded.userId}`);
       return res.status(401).json({
         success: false,
         message: 'Invalid refresh token'
@@ -786,6 +782,7 @@ exports.refresh = async (req, res, next) => {
       message: 'Token refreshed'
     });
   } catch (error) {
+    console.error(`[AUTH] Refresh - Error: ${error.message}`);
     res.clearCookie('accessToken', { ...cookieOptions, maxAge: 0 });
     res.clearCookie('refreshToken', { ...cookieOptions, maxAge: 0 });
 
