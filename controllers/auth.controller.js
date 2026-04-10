@@ -18,15 +18,15 @@ const googleClient = new OAuth2Client(
 );
 
 // Generate tokens
-const generateTokens = (userId) => {
+const generateTokens = (userId, deviceId = null) => {
   const accessToken = jwt.sign(
-    { userId },
+    { userId, deviceId },
     process.env.JWT_ACCESS_SECRET,
     { expiresIn: process.env.JWT_ACCESS_EXPIRE || '15m' }
   );
 
   const refreshToken = jwt.sign(
-    { userId },
+    { userId, deviceId },
     process.env.JWT_REFRESH_SECRET,
     { expiresIn: process.env.JWT_REFRESH_EXPIRE || '7d' }
   );
@@ -38,8 +38,8 @@ const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER
 
 const cookieOptions = {
   httpOnly: true,
-  secure: isProduction, 
-  sameSite: isProduction ? 'none' : 'lax', 
+  secure: isProduction,
+  sameSite: isProduction ? 'none' : 'lax',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/'
 };
@@ -55,17 +55,18 @@ const accessCookieOptions = {
 // ========== GOOGLE SIGN-IN ==========
 
 // Verify Google token and login/signup user
+// Verify Google token and login/signup user (GIS - Frontend flow)
 exports.googleSignIn = async (req, res, next) => {
   try {
-    const { access_token, deviceId, deviceName } = req.body;
+    const { idToken, deviceId, deviceName } = req.body;
 
-    if (!access_token) {
-      return res.status(400).json({ success: false, message: 'Google access token is required' });
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: 'Google ID token is required' });
     }
 
-    // Verify Google token
+    // Verify Google ID token
     const ticket = await googleClient.verifyIdToken({
-      idToken: access_token,
+      idToken: idToken,
       audience: process.env.GOOGLE_CLIENT_ID
     });
 
@@ -112,7 +113,7 @@ exports.googleSignIn = async (req, res, next) => {
       user = await RestaurantAdmin.create({
         email,
         googleId,
-                ownerName: name || '',
+        ownerName: name || '',
         logo: picture || null,
         shortId: shortId,
         subscription: initialSubscription
@@ -124,11 +125,11 @@ exports.googleSignIn = async (req, res, next) => {
     }
 
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id.toString());
+    const { accessToken, refreshToken } = generateTokens(user._id.toString(), deviceId);
 
     // Hash and store refresh token with device info
     const tokenHash = hashToken(refreshToken);
-    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip;
 
     // Remove any existing tokens for this device
     user.refreshTokens = user.refreshTokens.filter(rt => rt.deviceId !== deviceId);
@@ -137,7 +138,7 @@ exports.googleSignIn = async (req, res, next) => {
     user.refreshTokens.push({
       tokenHash,
       deviceId: deviceId || 'unknown',
-      deviceName: deviceName || 'Unknown Device',
+      deviceName: deviceName || req.headers['user-agent'] || 'Unknown Device',
       ipAddress,
       lastSeen: new Date(),
       isOnline: true,
@@ -153,17 +154,8 @@ exports.googleSignIn = async (req, res, next) => {
     await user.save();
 
     // Set cookies
-    console.log(`[AUTH] Google SignIn - Host: ${req.headers.host}, Secure: ${req.secure}, Protocol: ${req.protocol}`);
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
-
-    // Log response headers for debugging
-    const originalJson = res.json;
-    res.json = function(data) {
-      console.log('[GoogleSignIn] Response headers:', res.getHeaders());
-      console.log('[GoogleSignIn] Set-Cookie headers:', res.getHeader('Set-Cookie'));
-      return originalJson.call(this, data);
-    };
 
     // Log activity
     await logActivity({
@@ -203,19 +195,19 @@ exports.googleAuth = async (req, res) => {
   try {
     const { deviceId, deviceName } = req.query;
     const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
-    
+
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.profile',
       'https://www.googleapis.com/auth/userinfo.email'
     ];
-    
+
     // Pass deviceInfo smoothly through Google using State 
-    const stateObj = { 
-      deviceId: deviceId || 'unknown', 
-      deviceName: deviceName || req.headers['user-agent'] || 'Unknown Browser' 
+    const stateObj = {
+      deviceId: deviceId || 'unknown',
+      deviceName: deviceName || req.headers['user-agent'] || 'Unknown Browser'
     };
     const stateParam = Buffer.from(JSON.stringify(stateObj)).toString('base64');
-    
+
     const authUrl = googleClient.generateAuthUrl({
       access_type: 'offline',
       scope: scopes,
@@ -223,7 +215,7 @@ exports.googleAuth = async (req, res) => {
       redirect_uri: redirectUri,
       state: stateParam
     });
-    
+
     res.redirect(authUrl);
   } catch (error) {
     console.error('Google Auth URL generation error:', error);
@@ -236,33 +228,33 @@ exports.googleAuth = async (req, res) => {
 exports.googleCallback = async (req, res) => {
   try {
     const { code } = req.query;
-    
+
     if (!code) {
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${frontendUrl}/auth?mode=register&error=no_code`);
     }
-    
+
     const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
-    
+
     // Exchange code for tokens
     const { tokens } = await googleClient.getToken({
       code,
       redirect_uri: redirectUri
     });
-    
+
     // Verify ID token
     const ticket = await googleClient.verifyIdToken({
       idToken: tokens.id_token,
       audience: process.env.GOOGLE_CLIENT_ID
     });
-    
+
     const payload = ticket.getPayload();
     const { sub: googleId, email, name, picture } = payload;
-    
+
     // Get device info from query params (passed through state) or use defaults
     let deviceId = 'unknown';
     let deviceName = 'Unknown Browser';
-    
+
     if (req.query.state) {
       try {
         const stateObj = JSON.parse(Buffer.from(req.query.state, 'base64').toString('ascii'));
@@ -274,10 +266,10 @@ exports.googleCallback = async (req, res) => {
     } else {
       deviceName = req.headers['user-agent'] || 'Unknown Browser';
     }
-    
+
     // Find or create user
     let user = await RestaurantAdmin.findOne({ email });
-    
+
     if (!user) {
       // Generate shortId
       const { generateShortId } = require('../utils/id.util');
@@ -315,7 +307,7 @@ exports.googleCallback = async (req, res) => {
       user = await RestaurantAdmin.create({
         email,
         googleId,
-                ownerName: name || '',
+        ownerName: name || '',
         logo: picture || null,
         shortId: shortId,
         subscription: initialSubscription
@@ -325,17 +317,17 @@ exports.googleCallback = async (req, res) => {
       user.googleId = googleId;
       await user.save();
     }
-    
+
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id.toString());
-    
+    const { accessToken, refreshToken } = generateTokens(user._id.toString(), deviceId);
+
     // Hash and store refresh token
     const tokenHash = hashToken(refreshToken);
     const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    
+
     // Remove any existing tokens for this device
     user.refreshTokens = user.refreshTokens.filter(rt => rt.deviceId !== deviceId);
-    
+
     // Add new refresh token
     user.refreshTokens.push({
       tokenHash,
@@ -352,9 +344,9 @@ exports.googleCallback = async (req, res) => {
         loginMethod: 'google'
       }]
     });
-    
+
     await user.save();
-    
+
     // Set cookies
     if (process.env.NODE_ENV === 'production') {
       console.log(`[AUTH] Google Callback - Setting cookies: SameSite=${isProduction ? 'none' : 'lax'}, Secure=${isProduction}`);
@@ -362,7 +354,7 @@ exports.googleCallback = async (req, res) => {
     }
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
-    
+
     // Log activity
     await logActivity({
       type: 'auth',
@@ -370,11 +362,11 @@ exports.googleCallback = async (req, res) => {
       action: 'GOOGLE_LOGIN',
       details: { deviceId, deviceName, ipAddress }
     });
-    
+
     // Redirect to frontend dashboard
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     res.redirect(`${frontendUrl}/admin/dashboard`);
-    
+
   } catch (error) {
     console.error('Google Callback error:', error);
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -512,7 +504,7 @@ exports.verifyOtp = async (req, res, next) => {
     await user.save();
 
     // Now log them in (Generate tokens)
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(user._id, deviceId);
 
     // Initialize refreshTokens array if it doesn't exist
     if (!user.refreshTokens) user.refreshTokens = [];
@@ -599,7 +591,7 @@ exports.login = async (req, res, next) => {
     }
 
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(user._id, deviceIdentifier);
 
     // Use provided deviceId (persistent from frontend)
     const deviceIdentifier = deviceId || 'unknown';
@@ -769,7 +761,7 @@ exports.refresh = async (req, res, next) => {
     if (tokenDoc.prevTokenHash === hashed) {
       const RECENT_ROTATION_MS = 60 * 1000;
       const rotationAge = Date.now() - new Date(tokenDoc.rotatedAt).getTime();
-      
+
       if (rotationAge > RECENT_ROTATION_MS) {
         console.warn(`[AUTH] Refresh - Expired grace period (old token) for User: ${decoded.userId}`);
         return res.status(401).json({
@@ -777,7 +769,7 @@ exports.refresh = async (req, res, next) => {
           message: 'Session expired'
         });
       }
-      
+
       // If it's within 60s, we allow it to proceed and "re-issue" or just return same?
       // Traditionally we issue new ones but the key is NOT to throw 401.
       if (process.env.NODE_ENV === 'development') {
@@ -794,7 +786,7 @@ exports.refresh = async (req, res, next) => {
     }
 
     // Generate new tokens
-    const tokens = generateTokens(decoded.userId);
+    const tokens = generateTokens(decoded.userId, tokenDoc.deviceId);
 
     // Update token rotation info
     tokenDoc.prevTokenHash = hashed;
@@ -1175,7 +1167,7 @@ exports.deleteAccount = async (req, res, next) => {
           console.error(`[DeleteAccount] Failed to delete image for item ${item._id}:`, imgError.message);
         }
       });
-    
+
     // Delete restaurant logo from Cloudinary if exists
     if (user.logo && user.logo.includes('cloudinary.com')) {
       try {
@@ -1195,8 +1187,8 @@ exports.deleteAccount = async (req, res, next) => {
     const DeletedRestaurant = require('../models/DeletedRestaurant');
     await DeletedRestaurant.findOneAndUpdate(
       { email: user.email },
-      { 
-        email: user.email, 
+      {
+        email: user.email,
         subscription: user.subscription,
         deletionReason: reason
       },
