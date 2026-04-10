@@ -117,6 +117,14 @@ if (process.env.NODE_ENV !== 'production') {
 app.use(express.json());
 app.use(cookieParser());
 app.use(systemMonitor);
+app.use((req, res, next) => {
+  if (process.env.NODE_ENV === 'production' || req.originalUrl.includes('/auth/')) {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const resolvedIp = req.ip;
+    console.log(`[IP Debug] ${req.method} ${req.originalUrl} - HeaderIP: ${ip}, ResolvedIP: ${resolvedIp}, TrustProxy: ${app.get('trust proxy')}`);
+  }
+  next();
+});
 app.use((req, res, next) => serverMonitor.trackRequest(req, res, next));
 
 // CORS configuration

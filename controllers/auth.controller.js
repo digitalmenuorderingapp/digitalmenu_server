@@ -724,10 +724,13 @@ exports.refresh = async (req, res, next) => {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     const hashed = hashToken(refreshToken);
 
-    // Find admin user with this token
+    // Find admin user - check both current hash and the previous hash (for grace period)
     const user = await RestaurantAdmin.findOne({
       _id: decoded.userId,
-      'refreshTokens.tokenHash': hashed
+      $or: [
+        { 'refreshTokens.tokenHash': hashed },
+        { 'refreshTokens.prevTokenHash': hashed }
+      ]
     });
 
     if (!user) {
@@ -738,7 +741,8 @@ exports.refresh = async (req, res, next) => {
       });
     }
 
-    const tokenDoc = user.refreshTokens.find(t => t.tokenHash === hashed);
+    // Find the specific token document
+    const tokenDoc = user.refreshTokens.find(t => t.tokenHash === hashed || t.prevTokenHash === hashed);
 
     if (!tokenDoc || tokenDoc.revokedAt) {
       console.warn(`[AUTH] Refresh - Token revoked or missing for User: ${decoded.userId}`);
@@ -746,6 +750,27 @@ exports.refresh = async (req, res, next) => {
         success: false,
         message: 'Invalid refresh token'
       });
+    }
+
+    // Grace Period Logic:
+    // If the token matches prevTokenHash, check if it was rotated recently (< 60s)
+    if (tokenDoc.prevTokenHash === hashed) {
+      const RECENT_ROTATION_MS = 60 * 1000;
+      const rotationAge = Date.now() - new Date(tokenDoc.rotatedAt).getTime();
+      
+      if (rotationAge > RECENT_ROTATION_MS) {
+        console.warn(`[AUTH] Refresh - Expired grace period (old token) for User: ${decoded.userId}`);
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired'
+        });
+      }
+      
+      // If it's within 60s, we allow it to proceed and "re-issue" or just return same?
+      // Traditionally we issue new ones but the key is NOT to throw 401.
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`🕒 [AUTH] Refresh - Grace period used for User: ${decoded.userId}`);
+      }
     }
 
     // Check if token is expired
@@ -759,13 +784,15 @@ exports.refresh = async (req, res, next) => {
     // Generate new tokens
     const tokens = generateTokens(decoded.userId);
 
-    // Update existing token in-place (no new document created)
+    // Update token rotation info
+    tokenDoc.prevTokenHash = hashed;
+    tokenDoc.rotatedAt = new Date();
     tokenDoc.tokenHash = hashToken(tokens.refreshToken);
     tokenDoc.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     tokenDoc.revokedAt = undefined;
     tokenDoc.isOnline = true;
     tokenDoc.lastSeen = new Date();
-    tokenDoc.ipAddress = req.ip || req.connection.remoteAddress;
+    tokenDoc.ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     tokenDoc.userAgent = req.headers['user-agent'];
     await user.save();
 

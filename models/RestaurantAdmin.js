@@ -12,6 +12,8 @@ const refreshTokenSchema = new mongoose.Schema({
   issuedAt: { type: Date, default: Date.now },
   expiresAt: { type: Date },
   revokedAt: { type: Date },
+  prevTokenHash: { type: String }, // For grace period during rotation
+  rotatedAt: { type: Date },      // To track when the token was last rotated
   loginMethod: { type: String, enum: ['local', 'google'] },
   sessions: [{
     loggedInAt: { type: Date, required: true },
