@@ -36,11 +36,10 @@ const generateTokens = (userId) => {
 
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 
-// Cookie options - Use 'lax' in production instead of 'none' because Vercel/Render is same-origin proxy
 const cookieOptions = {
   httpOnly: true,
   secure: isProduction, 
-  sameSite: 'lax', 
+  sameSite: isProduction ? 'none' : 'lax', 
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/'
 };
@@ -48,7 +47,7 @@ const cookieOptions = {
 const accessCookieOptions = {
   httpOnly: true,
   secure: isProduction,
-  sameSite: 'lax',
+  sameSite: isProduction ? 'none' : 'lax',
   maxAge: 15 * 60 * 1000, // 15 minutes
   path: '/'
 };
@@ -357,7 +356,10 @@ exports.googleCallback = async (req, res) => {
     await user.save();
     
     // Set cookies
-    console.log(`[AUTH] Google Callback - Host: ${req.headers.host}, Secure: ${req.secure}, Protocol: ${req.protocol}`);
+    if (process.env.NODE_ENV === 'production') {
+      console.log(`[AUTH] Google Callback - Setting cookies: SameSite=${isProduction ? 'none' : 'lax'}, Secure=${isProduction}`);
+      console.log(`[AUTH] Header Host: ${req.headers.host}, Origin: ${req.headers.origin}`);
+    }
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
     
