@@ -810,7 +810,8 @@ exports.refresh = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Token refreshed'
+      message: 'Token refreshed',
+      loginMethod: req.loginMethod || tokenDoc.loginMethod
     });
   } catch (error) {
     console.error(`[AUTH] Refresh - Error: ${error.message}`);
@@ -842,7 +843,8 @@ exports.getMe = async (req, res, next) => {
       user: {
         ...user.toObject(),
         subscription: subData
-      }
+      },
+      loginMethod: req.loginMethod
     });
   } catch (error) {
     next(error);

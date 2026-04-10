@@ -3,6 +3,7 @@ const router = express.Router();
 const { 
   requestOTP, 
   verifyOTP, 
+  googleSignIn,
   autoLogin,
   getRestaurants,
   getRestaurantDetail,
@@ -19,6 +20,7 @@ const { superadminProtect } = require('../middleware/superadmin.middleware');
 // Public superadmin routes
 router.post('/send-otp', requestOTP);
 router.post('/verify-otp', verifyOTP);
+router.post('/google-signin', googleSignIn);
 router.post('/auto-login', autoLogin);
 router.post('/refresh', refreshSuperadminToken);
 router.post('/logout', logout);

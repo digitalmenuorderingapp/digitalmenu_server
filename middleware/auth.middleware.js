@@ -65,9 +65,10 @@ exports.protect = async (req, res, next) => {
         });
       }
 
-      // Set device ID for downstream use (like lastSeen)
+      // Set device ID and login method for downstream use (like lastSeen and getMe)
       if (tokenRecord) {
         req.deviceId = tokenRecord.deviceId;
+        req.loginMethod = tokenRecord.loginMethod || 'password';
       }
 
       // Enforcement Logic for Restaurant Admins

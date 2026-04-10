@@ -10,6 +10,12 @@ const { logActivity } = require('../utils/auditLogger');
 const { getMetrics } = require('../middleware/systemMonitor');
 const mongoose = require('mongoose');
 const MenuItem = require('../models/MenuItem');
+const { OAuth2Client } = require('google-auth-library');
+
+const googleClient = new OAuth2Client(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET
+);
 
 
 // In-memory OTP storage for superadmin (sahin401099@gmail.com)
@@ -443,6 +449,102 @@ const getMe = async (req, res) => {
   }
 };
 
+/**
+ * Google Sign-In for Superadmin (GIS - Frontend flow)
+ */
+const googleSignIn = async (req, res) => {
+  try {
+    const { idToken, deviceId, deviceName } = req.body;
+
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: 'Google ID token is required' });
+    }
+
+    // Verify Google ID token
+    const ticket = await googleClient.verifyIdToken({
+      idToken: idToken,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+    const { email } = payload;
+
+    // Strict Hardcoded check for superadmin
+    if (email !== 'sahin401099@gmail.com') {
+      await logActivity({
+        type: 'auth',
+        action: 'Unauthorized Superadmin Google Login Attempt',
+        user: email || 'unknown',
+        status: 'failed',
+        req
+      });
+      return res.status(403).json({ success: false, message: 'Unauthorized email' });
+    }
+
+    // Find or bootstrap superadmin in DB
+    let user = await Superadmin.findOne({ email });
+    if (!user) {
+      user = await Superadmin.create({ email });
+    }
+
+    // Generate tokens
+    const { accessToken, refreshToken } = generateSuperadminTokens(user._id);
+
+    // Device info
+    const devId = deviceId || 'browser_session';
+    const devName = deviceName || 'Superadmin Dashboard';
+
+    // Store refresh token
+    if (!user.refreshTokens) user.refreshTokens = [];
+
+    const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === devId);
+    const tokenData = {
+      tokenHash: hashToken(refreshToken),
+      deviceId: devId,
+      deviceName: devName,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      isOnline: true,
+      lastSeen: new Date(),
+      sessions: [{ loggedInAt: new Date(), loginMethod: 'google' }]
+    };
+
+    if (tokenIndex !== -1) {
+      user.refreshTokens[tokenIndex] = tokenData;
+    } else {
+      user.refreshTokens.push(tokenData);
+    }
+
+    await user.save();
+
+    // Log successful login
+    await logActivity({
+      type: 'auth',
+      action: 'Superadmin Google Login',
+      user: email,
+      req
+    });
+
+    // Set cookies
+    res.cookie('accessToken', accessToken, accessCookieOptions);
+    res.cookie('refreshToken', refreshToken, cookieOptions);
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      accessToken,
+      user: { id: user._id, email: user.email, role: 'superadmin' }
+    });
+  } catch (error) {
+    console.error('Superadmin Google Sign-In error:', error);
+    res.status(401).json({
+      success: false,
+      message: 'Google authentication failed',
+      error: error.message
+    });
+  }
+};
+
 const logout = async (req, res) => {
   res.clearCookie('accessToken', { ...accessCookieOptions, maxAge: 0 });
   res.clearCookie('refreshToken', { ...cookieOptions, maxAge: 0 });
@@ -749,6 +851,7 @@ const getAuditLogs = async (req, res) => {
 module.exports = {
   requestOTP,
   verifyOTP,
+  googleSignIn,
   autoLogin,
   emitServiceStatus,
   getRestaurants,
