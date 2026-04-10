@@ -41,14 +41,16 @@ const cookieOptions = {
   httpOnly: true,
   secure: isProduction, // Only force secure in production
   sameSite: isProduction ? 'none' : 'lax', // 'none' requires HTTPS, 'lax' is better for local dev
-  maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  path: '/'
 };
 
 const accessCookieOptions = {
   httpOnly: true,
   secure: isProduction,
   sameSite: isProduction ? 'none' : 'lax',
-  maxAge: 15 * 60 * 1000 // 15 minutes
+  maxAge: 15 * 60 * 1000, // 15 minutes
+  path: '/'
 };
 
 // ========== GOOGLE SIGN-IN ==========
@@ -152,8 +154,18 @@ exports.googleSignIn = async (req, res, next) => {
     await user.save();
 
     // Set cookies
+    console.log('[GoogleSignIn] Setting cookies - isProduction:', isProduction, 'cookieOptions:', cookieOptions);
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
+    console.log('[GoogleSignIn] Cookies set successfully');
+
+    // Log response headers for debugging
+    const originalJson = res.json;
+    res.json = function(data) {
+      console.log('[GoogleSignIn] Response headers:', res.getHeaders());
+      console.log('[GoogleSignIn] Set-Cookie headers:', res.getHeader('Set-Cookie'));
+      return originalJson.call(this, data);
+    };
 
     // Log activity
     await logActivity({
