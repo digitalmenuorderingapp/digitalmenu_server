@@ -36,11 +36,11 @@ const generateTokens = (userId) => {
 
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 
-// Cookie options
+// Cookie options - Use 'lax' in production instead of 'none' because Vercel/Render is same-origin proxy
 const cookieOptions = {
   httpOnly: true,
-  secure: isProduction, // Only force secure in production
-  sameSite: isProduction ? 'none' : 'lax', // 'none' requires HTTPS, 'lax' is better for local dev
+  secure: isProduction, 
+  sameSite: 'lax', 
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/'
 };
@@ -48,7 +48,7 @@ const cookieOptions = {
 const accessCookieOptions = {
   httpOnly: true,
   secure: isProduction,
-  sameSite: isProduction ? 'none' : 'lax',
+  sameSite: 'lax',
   maxAge: 15 * 60 * 1000, // 15 minutes
   path: '/'
 };
@@ -169,10 +169,9 @@ exports.googleSignIn = async (req, res, next) => {
 
     // Log activity
     await logActivity({
-      userId: user._id,
-      restaurantId: user._id,
+      type: 'auth',
+      user: user.email,
       action: 'GOOGLE_LOGIN',
-      entityType: 'USER',
       details: { deviceId, deviceName, ipAddress }
     });
 
@@ -364,10 +363,9 @@ exports.googleCallback = async (req, res) => {
     
     // Log activity
     await logActivity({
-      userId: user._id,
-      restaurantId: user._id,
+      type: 'auth',
+      user: user.email,
       action: 'GOOGLE_LOGIN',
-      entityType: 'USER',
       details: { deviceId, deviceName, ipAddress }
     });
     
@@ -536,8 +534,8 @@ exports.verifyOtp = async (req, res, next) => {
     // Log successful registration/verification
     await logActivity({
       type: 'user',
-      action: 'Account Verified & Logged In',
       user: user.email,
+      action: 'Account Verified & Logged In',
       req
     });
 

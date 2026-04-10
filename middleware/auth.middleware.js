@@ -9,9 +9,9 @@ exports.protect = async (req, res, next) => {
     let refreshToken = req.cookies.refreshToken;
 
     if (!token) {
-      if (process.env.NODE_ENV === 'development') {
-        console.warn(`[AUTH] 401 - Missing access token (Path: ${req.originalUrl})`);
-      }
+      // Diagnostic log for all environments
+      console.warn(`[AUTH] 401 - Missing access token (Path: ${req.originalUrl}, HasRefreshToken: ${!!refreshToken})`);
+      
       return res.status(401).json({
         success: false,
         message: 'Not authorized, no access token'
@@ -97,9 +97,7 @@ exports.protect = async (req, res, next) => {
       }
       next();
     } catch (error) {
-      if (process.env.NODE_ENV === 'development') {
-        console.error(`[AUTH] 401 - Token Verification Failed: ${error.message} (Path: ${req.originalUrl})`);
-      }
+      console.error(`[AUTH] 401 - Token Verification Failed: ${error.message} (Path: ${req.originalUrl})`);
       return res.status(401).json({
         success: false,
         message: 'Not authorized, token invalid'
