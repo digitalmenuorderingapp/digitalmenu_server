@@ -94,13 +94,9 @@ exports.validateOrder = [
     .isMobilePhone('any')
     .withMessage('Please provide a valid phone number'),
   body('deviceId')
-    .notEmpty()
-    .trim()
-    .withMessage('Device ID is required'),
+    .optional({ checkFalsy: true }),
   body('sessionId')
-    .notEmpty()
-    .trim()
-    .withMessage('Session ID is required'),
+    .optional({ checkFalsy: true }),
   body('orderType')
     .optional()
     .isIn(['dine-in', 'takeaway', 'delivery'])

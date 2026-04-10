@@ -7,6 +7,9 @@ const { validateOrder } = require('../middleware/validation.middleware');
 const { trackUserActivity } = require('../middleware/userTracker');
 const { checkSubscription } = require('../middleware/subscription');
 
+// Protected admin order creation (must be before public routes)
+router.post('/create-admin', protect, validateOrder, checkSubscription, orderController.createOrder);
+
 // Public routes
 router.post('/', validateOrder, checkSubscription, orderController.createOrder);
 router.get('/device/:deviceId', orderController.getOrdersByDevice);

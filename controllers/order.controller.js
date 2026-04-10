@@ -51,7 +51,10 @@ exports.createOrder = async (req, res, next) => {
       orderType,
       numberOfPersons: orderType === 'dine-in' ? numberOfPersons : undefined,
       specialInstructions,
-      status: 'PLACED'
+      status: 'PLACED',
+      // Add metadata for admin-created orders to prevent duplicate notifications
+      createdBy: req.userId || null,
+      source: req.userId ? 'admin' : 'customer'
     });
 
     // 2. Return response immediately (don't wait for async operations)

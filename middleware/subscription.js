@@ -8,11 +8,11 @@ const checkSubscription = async (req, res, next) => {
   try {
     // req.userId is usually set by authMiddleware
     const restaurantId = req.userId || req.body.restaurantId || req.params.restaurantId;
-    
+
     if (!restaurantId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Restaurant ID required for subscription check' 
+      return res.status(400).json({
+        success: false,
+        message: 'Restaurant ID required for subscription check'
       });
     }
 
