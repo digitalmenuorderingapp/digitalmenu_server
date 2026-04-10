@@ -39,6 +39,10 @@ const restaurantAdminSchema = new mongoose.Schema({
     sparse: true,
     unique: true
   },
+  googleRefreshToken: {
+    type: String,
+    default: null
+  },
   password: {
     type: String,
     minlength: [6, 'Password must be at least 6 characters']

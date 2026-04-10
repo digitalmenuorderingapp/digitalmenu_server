@@ -23,6 +23,11 @@ const app = express();
 app.set('trust proxy', true);
 const server = http.createServer(app);
 
+// Environment detection debug
+console.log(`[ENV] NODE_ENV: ${process.env.NODE_ENV}`);
+console.log(`[ENV] RENDER: ${process.env.RENDER}`);
+console.log(`[ENV] Detected Production Mode: ${process.env.NODE_ENV === 'production' || process.env.RENDER === 'true'}`);
+
 const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const allowedOrigins = [
   ...envOrigins,

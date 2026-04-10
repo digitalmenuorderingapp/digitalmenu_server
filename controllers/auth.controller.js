@@ -64,13 +64,37 @@ exports.googleSignIn = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Google ID token is required' });
     }
 
-    // Verify Google ID token
-    const ticket = await googleClient.verifyIdToken({
-      idToken: idToken,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
+    let payload;
+    let googleRefreshToken = null;
 
-    const payload = ticket.getPayload();
+    // Check if the provided 'idToken' is actually an authorization code (common with GIS Code Client)
+    // Authorization codes are typically not JWTs (don't have 3 parts separated by dots)
+    const isCode = idToken && idToken.split('.').length !== 3;
+
+    if (isCode) {
+      // Exchange authorization code for tokens
+      // IMPORTANT: For Popup/GIS flow, redirect_uri must be 'postmessage'
+      const { tokens } = await googleClient.getToken({
+        code: idToken,
+        redirect_uri: 'postmessage'
+      });
+
+      googleRefreshToken = tokens.refresh_token;
+
+      const ticket = await googleClient.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+      payload = ticket.getPayload();
+    } else {
+      // Verify Google ID token directly
+      const ticket = await googleClient.verifyIdToken({
+        idToken: idToken,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+      payload = ticket.getPayload();
+    }
+
     const { sub: googleId, email, name, picture } = payload;
 
     // Find or create user
@@ -124,8 +148,19 @@ exports.googleSignIn = async (req, res, next) => {
       await user.save();
     }
 
+    // Always update Google Refresh Token if received (it's only sent on first consent or if prompt=consent is used)
+    if (googleRefreshToken) {
+      user.googleRefreshToken = googleRefreshToken;
+      await user.save();
+      console.log(`[AUTH] Updated Google Refresh Token for ${user.email}`);
+    }
+
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(user._id.toString(), deviceId);
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[AUTH] Generated internal tokens for ${user.email}. Device: ${deviceId}`);
+    }
 
     // Hash and store refresh token with device info
     const tokenHash = hashToken(refreshToken);
@@ -154,6 +189,12 @@ exports.googleSignIn = async (req, res, next) => {
     await user.save();
 
     // Set cookies
+    if (isProduction) {
+      console.log(`[AUTH] Production Environment - Setting Secure, SameSite=None cookies`);
+    } else {
+      console.warn(`[AUTH] Non-Production Environment - Cookies might fail in cross-site setup (SameSite=${cookieOptions.sameSite})`);
+    }
+
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
 
@@ -715,7 +756,10 @@ exports.refresh = async (req, res, next) => {
     const { refreshToken } = req.cookies;
 
     if (!refreshToken) {
-      if (process.env.NODE_ENV === 'development') {
+      if (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true') {
+        const cookieReport = req.headers.cookie ? 'present' : 'missing';
+        console.warn(`[AUTH] Refresh - No refresh token cookie found. Cookie header: ${cookieReport}. Origin: ${req.headers.origin}`);
+      } else {
         console.warn(`[AUTH] Refresh - No refresh token cookie found`);
       }
       return res.status(401).json({

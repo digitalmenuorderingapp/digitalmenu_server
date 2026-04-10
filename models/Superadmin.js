@@ -63,6 +63,10 @@ const superadminSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  googleRefreshToken: {
+    type: String,
+    default: null
+  },
   // Embedded refresh tokens for multi-device session management
   refreshTokens: [refreshTokenSchema],
   systemLogs: [systemLogSchema]

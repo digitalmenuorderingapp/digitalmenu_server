@@ -388,6 +388,12 @@ const refreshSuperadminToken = async (req, res) => {
     const { refreshToken } = req.cookies;
 
     if (!refreshToken) {
+      if (isProduction) {
+        const cookieReport = req.headers.cookie ? 'present' : 'missing';
+        console.warn(`[SUPERADMIN AUTH] Refresh - No refresh token cookie found. Cookie header: ${cookieReport}. Origin: ${req.headers.origin}`);
+      } else {
+        console.warn(`[SUPERADMIN AUTH] Refresh - No refresh token cookie found`);
+      }
       return res.status(401).json({ success: false, message: 'No refresh token provided' });
     }
 
@@ -460,13 +466,35 @@ const googleSignIn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Google ID token is required' });
     }
 
-    // Verify Google ID token
-    const ticket = await googleClient.verifyIdToken({
-      idToken: idToken,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
+    let payload;
+    let googleRefreshToken = null;
 
-    const payload = ticket.getPayload();
+    // Check if the provided 'idToken' is actually an authorization code (common with GIS Code Client)
+    const isCode = idToken && idToken.split('.').length !== 3;
+
+    if (isCode) {
+      // Exchange authorization code for tokens
+      const { tokens } = await googleClient.getToken({
+        code: idToken,
+        redirect_uri: 'postmessage'
+      });
+
+      googleRefreshToken = tokens.refresh_token;
+
+      const ticket = await googleClient.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+      payload = ticket.getPayload();
+    } else {
+      // Verify Google ID token directly
+      const ticket = await googleClient.verifyIdToken({
+        idToken: idToken,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+      payload = ticket.getPayload();
+    }
+
     const { email } = payload;
 
     // Strict Hardcoded check for superadmin
@@ -515,17 +543,21 @@ const googleSignIn = async (req, res) => {
       user.refreshTokens.push(tokenData);
     }
 
+    // Always update Google Refresh Token if received
+    if (googleRefreshToken) {
+      user.googleRefreshToken = googleRefreshToken;
+      console.log(`[SUPERADMIN AUTH] Updated Google Refresh Token for ${user.email}`);
+    }
+
     await user.save();
 
-    // Log successful login
-    await logActivity({
-      type: 'auth',
-      action: 'Superadmin Google Login',
-      user: email,
-      req
-    });
-
     // Set cookies
+    if (isProduction) {
+      console.log(`[SUPERADMIN AUTH] Production Environment - Setting Secure, SameSite=None cookies`);
+    } else {
+      console.warn(`[SUPERADMIN AUTH] Non-Production Environment - Cookies might fail in cross-site setup (SameSite=${cookieOptions.sameSite})`);
+    }
+
     res.cookie('accessToken', accessToken, accessCookieOptions);
     res.cookie('refreshToken', refreshToken, cookieOptions);
 
