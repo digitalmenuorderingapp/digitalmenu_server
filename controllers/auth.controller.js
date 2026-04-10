@@ -590,11 +590,11 @@ exports.login = async (req, res, next) => {
       });
     }
 
-    // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id, deviceIdentifier);
-
     // Use provided deviceId (persistent from frontend)
     const deviceIdentifier = deviceId || 'unknown';
+
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id, deviceIdentifier);
 
     // Find if device already exists in the admin's refreshTokens
     const tokenIndex = user.refreshTokens.findIndex(t => t.deviceId === deviceIdentifier);
