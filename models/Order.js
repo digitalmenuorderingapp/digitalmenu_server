@@ -127,10 +127,18 @@ const orderSchema = new mongoose.Schema({
 
   // Flags
   paymentVerificationRequestbycustomer: {
-    applied: { type: Boolean, default: false },
-    adminAskedretry: { type: Boolean, default: false },
-    retrycount: { type: Number, default: 0 },
-    appliedUTR: { type: String, default: '' }
+    type: {
+      applied: { type: Boolean, default: false },
+      adminAskedretry: { type: Boolean, default: false },
+      retrycount: { type: Number, default: 0 },
+      appliedUTR: { type: String, default: '' }
+    },
+    default: () => ({
+      applied: false,
+      adminAskedretry: false,
+      retrycount: 0,
+      appliedUTR: ''
+    })
   },
 
   paymentStatus: {

@@ -285,12 +285,16 @@ exports.handleOrderAction = async (req, res, next) => {
 
       // Notification for Customer (Device)
       if (order.deviceId) {
+        const customerMessage = notificationType === 'PAYMENT_RETRY'
+          ? 'Verification failed. Please retry payment. 🔁'
+          : `Your order is now ${update.status || order.status}`;
+
         await notificationService.send({
           recipient: order.deviceId,
           recipientType: 'CUSTOMER',
           type: notificationType,
-          title: 'Order Update',
-          message: `Your order is now ${update.status || order.status}`,
+          title: notificationType === 'PAYMENT_RETRY' ? 'Payment Verification' : 'Order Update',
+          message: customerMessage,
           metadata: {
             orderId: order._id,
             orderNumber: order.orderNumber,
@@ -577,9 +581,10 @@ exports.retryPayment = async (req, res, next) => {
     if (paymentMethod === 'ONLINE') {
       if (!order.paymentVerificationRequestbycustomer) order.paymentVerificationRequestbycustomer = {};
       order.paymentVerificationRequestbycustomer.applied = paymentMethod === 'ONLINE';
+      order.paymentVerificationRequestbycustomer.adminAskedretry = false; // Reset when customer submits new UTR
       order.paymentVerificationRequestbycustomer.appliedUTR = (paymentMethod === 'ONLINE' && utr) ? utr.substring(0, 6) : order.paymentVerificationRequestbycustomer.appliedUTR;
     }
-    
+
     order.paymentStatus = 'PENDING';
     order.isCollected = false;
     order.paymentVerificationRequestbycustomer.retrycount = (order.paymentVerificationRequestbycustomer.retrycount || 0) + 1;
@@ -588,11 +593,10 @@ exports.retryPayment = async (req, res, next) => {
 
     const enrichedOrder = await getEnrichedOrder(order);
 
-    // Emit update to admin and customer
+    // Emit update to admin only (not to customer - they just submitted payment)
     const io = req.app.get('io');
     if (io) {
       const adminRoom = order.restaurant.toString();
-      const customerRoom = order.deviceId;
 
       await notificationService.send({
         recipient: adminRoom,
@@ -606,21 +610,6 @@ exports.retryPayment = async (req, res, next) => {
           orderData: enrichedOrder
         }
       });
-
-      if (customerRoom) {
-        await notificationService.send({
-          recipient: customerRoom,
-          recipientType: 'CUSTOMER',
-          type: 'PAYMENT_RETRY',
-          title: 'Payment Status',
-          message: 'Payment details updated. Waiting for verification.',
-          metadata: {
-            orderId: order._id,
-            orderNumber: order.orderNumber,
-            orderData: enrichedOrder
-          }
-        });
-      }
     }
 
     res.json({ success: true, message: 'Payment updated successfully', data: enrichedOrder });
