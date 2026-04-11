@@ -4,6 +4,7 @@ const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
 const { reportEmailTemplate } = require('../templates/reportEmail');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
+const notificationService = require('../services/notification.service');
 
 // Helper to attach transactions to a single order
 const getEnrichedOrder = async (order) => {
@@ -70,14 +71,25 @@ exports.createOrder = async (req, res, next) => {
     // 3. Do async work AFTER response (non-blocking)
     // Fire-and-forget socket emission
     const io = req.app.get('io');
-
     if (io) {
       const targetId = restaurantId || req.userId;
       const roomId = targetId?.toString();
       
-      // Emit basic order immediately (admin can refresh for full data)
-      io.to(roomId).emit('newOrder', basicOrder);
-      io.to(roomId).emit('orderUpdate', basicOrder);
+      // Persist and emit notification
+      await notificationService.send({
+        recipient: roomId,
+        recipientType: 'ADMIN',
+        type: 'ORDER_NEW',
+        title: 'New Order Received',
+        message: `Order #${order.orderNumber} placed for Table #${order.tableNumber}`,
+        metadata: {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          tableNumber: order.tableNumber,
+          amount: order.totalAmount,
+          orderData: basicOrder
+        }
+      });
     }
 
   } catch (error) {
@@ -225,13 +237,50 @@ exports.handleOrderAction = async (req, res, next) => {
     const io = req.app.get('io');
     if (io) {
       const room = enrichedOrder.restaurant.toString();
-      io.to(room).emit('orderUpdate', enrichedOrder);
-      if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT') io.to(room).emit('paymentVerified', enrichedOrder);
-      if (action === 'REJECT_ORDER') io.to(room).emit('orderRejected', enrichedOrder);
       
-      // Notify Customer
-      io.to(enrichedOrder.deviceId).emit('orderStatusUpdate', enrichedOrder);
-      if (action === 'REQUEST_RETRY') io.to(enrichedOrder.deviceId).emit('paymentRetry', enrichedOrder);
+      // Map action to specific types for better UI handling
+      const typeMap = {
+        'ACCEPT_ORDER': 'ORDER_ACCEPTED',
+        'REJECT_ORDER': 'ORDER_REJECTED',
+        'COMPLETE_ORDER': 'ORDER_COMPLETED',
+        'VERIFY_PAYMENT': 'PAYMENT_VERIFIED',
+        'COLLECT_PAYMENT': 'PAYMENT_VERIFIED',
+        'REQUEST_RETRY': 'PAYMENT_RETRY',
+        'CLEAR_DUES': 'PAYMENT_VERIFIED'
+      };
+
+      const notificationType = typeMap[action] || 'ORDER_UPDATE';
+      
+      // Notification for Admin
+      await notificationService.send({
+        recipient: room,
+        recipientType: 'ADMIN',
+        type: notificationType,
+        title: `Order #${order.orderNumber} Updated`,
+        message: `Order status changed to ${update.status || order.status} via ${action}`,
+        metadata: {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          tableNumber: order.tableNumber,
+          orderData: enrichedOrder
+        }
+      });
+
+      // Notification for Customer (Device)
+      if (order.deviceId) {
+        await notificationService.send({
+          recipient: order.deviceId,
+          recipientType: 'CUSTOMER',
+          type: notificationType,
+          title: 'Order Update',
+          message: `Your order is now ${update.status || order.status}`,
+          metadata: {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            orderData: enrichedOrder
+          }
+        });
+      }
     }
 
     return res.json({ success: true, data: enrichedOrder });
@@ -335,11 +384,22 @@ exports.updateCustomerProfile = async (req, res, next) => {
         return acc;
       }, {});
 
-      Object.entries(ordersByRestaurant).forEach(([restId, orders]) => {
-        orders.forEach(order => {
-          io.to(restId).emit('orderUpdate', order);
-        });
-      });
+      for (const [restId, orders] of Object.entries(ordersByRestaurant)) {
+        for (const order of orders) {
+          await notificationService.send({
+            recipient: restId,
+            recipientType: 'ADMIN',
+            type: 'ORDER_UPDATE',
+            title: 'Customer Profile Updated',
+            message: `Customer info updated for Order #${order.orderNumber}`,
+            metadata: {
+              orderId: order._id,
+              orderNumber: order.orderNumber,
+              orderData: order
+            }
+          });
+        }
+      }
     }
 
     res.json({
@@ -516,9 +576,33 @@ exports.retryPayment = async (req, res, next) => {
     if (io) {
       const adminRoom = order.restaurant.toString();
       const customerRoom = order.deviceId;
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+
+      await notificationService.send({
+        recipient: adminRoom,
+        recipientType: 'ADMIN',
+        type: 'PAYMENT_RETRY',
+        title: 'Payment Update (Retry)',
+        message: `Customer updated payment for Order #${order.orderNumber}`,
+        metadata: {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          orderData: enrichedOrder
+        }
+      });
+
       if (customerRoom) {
-        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+        await notificationService.send({
+          recipient: customerRoom,
+          recipientType: 'CUSTOMER',
+          type: 'PAYMENT_RETRY',
+          title: 'Payment Status',
+          message: 'Payment details updated. Waiting for verification.',
+          metadata: {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            orderData: enrichedOrder
+          }
+        });
       }
     }
 
@@ -562,9 +646,33 @@ exports.applyOnlinePayment = async (req, res, next) => {
     if (io) {
       const adminRoom = order.restaurant.toString();
       const customerRoom = order.deviceId;
-      io.to(adminRoom).emit('orderUpdate', enrichedOrder);
+
+      await notificationService.send({
+        recipient: adminRoom,
+        recipientType: 'ADMIN',
+        type: 'PAYMENT_VERIFIED', // Technically verification requested
+        title: 'Online Payment Applied',
+        message: `UTR: ${utr} applied for Order #${order.orderNumber}`,
+        metadata: {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          orderData: enrichedOrder
+        }
+      });
+
       if (customerRoom) {
-        io.to(customerRoom).emit('orderStatusUpdate', enrichedOrder);
+        await notificationService.send({
+          recipient: customerRoom,
+          recipientType: 'CUSTOMER',
+          type: 'PAYMENT_VERIFIED',
+          title: 'Payment Sent',
+          message: 'Online payment applied. Waiting for restaurant verification.',
+          metadata: {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            orderData: enrichedOrder
+          }
+        });
       }
     }
 
@@ -626,9 +734,36 @@ exports.cancelOrder = async (req, res, next) => {
     // Emit real-time event to restaurant admin and customer
     const io = req.app.get('io');
     if (io) {
-      io.to(order.restaurant.toString()).emit('orderUpdate', enrichedOrder);
-      io.to(order.restaurant.toString()).emit('orderCancelled', enrichedOrder);
-      io.to(order.deviceId).emit('orderStatusUpdate', enrichedOrder);
+      const adminRoom = order.restaurant.toString();
+      const customerRoom = order.deviceId;
+
+      await notificationService.send({
+        recipient: adminRoom,
+        recipientType: 'ADMIN',
+        type: 'ORDER_CANCELLED',
+        title: 'Order Cancelled',
+        message: `Order #${order.orderNumber} cancelled by customer`,
+        metadata: {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          orderData: enrichedOrder
+        }
+      });
+
+      if (customerRoom) {
+        await notificationService.send({
+          recipient: customerRoom,
+          recipientType: 'CUSTOMER',
+          type: 'ORDER_CANCELLED',
+          title: 'Order Cancelled',
+          message: 'Your order has been cancelled',
+          metadata: {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            orderData: enrichedOrder
+          }
+        });
+      }
     }
 
     res.json({

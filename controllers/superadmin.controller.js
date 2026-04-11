@@ -11,6 +11,7 @@ const { getMetrics } = require('../middleware/systemMonitor');
 const mongoose = require('mongoose');
 const MenuItem = require('../models/MenuItem');
 const { OAuth2Client } = require('google-auth-library');
+const notificationService = require('../services/notification.service');
 
 const googleClient = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
@@ -344,6 +345,16 @@ const updateRestaurantStatus = async (req, res) => {
       req
     });
 
+    // Notify the restaurant in real-time
+    await notificationService.send({
+      recipient: restaurantId,
+      recipientType: 'ADMIN',
+      type: 'ACCOUNT_STATUS',
+      title: 'Account Status Updated',
+      message: `Your account has been marked as ${status}.`,
+      metadata: { status }
+    });
+
     res.json({ success: true, restaurant });
   } catch (error) {
     console.error('Update restaurant status error:', error);
@@ -371,6 +382,16 @@ const updateSubscription = async (req, res) => {
       action: `Updated subscription for ${restaurant.email}`,
       user: req.user.email,
       req
+    });
+
+    // Notify the restaurant in real-time
+    await notificationService.send({
+      recipient: restaurantId,
+      recipientType: 'ADMIN',
+      type: 'ACCOUNT_STATUS',
+      title: 'Subscription Updated',
+      message: `Your subscription has been updated to ${subscription.type} (${subscription.status}).`,
+      metadata: { subscription }
     });
 
     res.json({ success: true, restaurant });

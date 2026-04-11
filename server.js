@@ -157,6 +157,7 @@ app.use('/api/devices', require('./routes/devices.routes'));
 app.use('/api/public', require('./routes/public.routes'));
 app.use('/api/superadmin', require('./routes/superadmin.routes'));
 app.use('/api/server-monitoring', require('./routes/serverMonitoring.routes'));
+app.use('/api/notifications', require('./routes/notification.routes'));
 
 
 // Health check endpoint

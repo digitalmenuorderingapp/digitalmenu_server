@@ -46,7 +46,7 @@ class SocketService {
       socket.on('menuUpdated', (data) => {
         if (data && data.restaurantId) {
           // Broadcast to all sockets in the restaurant room
-          this.io.to(data.restaurantId).emit('menuUpdated', { restaurantId: data.restaurantId });
+          this.io.to(`restaurant:${data.restaurantId}`).emit('menuUpdated', { restaurantId: data.restaurantId });
           console.log(`[Socket] Menu updated broadcast to restaurant: ${data.restaurantId}`);
         }
       });
