@@ -96,10 +96,10 @@ exports.createMenuItem = async (req, res, next) => {
     });
     
     // Emit real-time menu update to restaurant customers
-    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+    socketService.emitToRoom(`restaurant:${req.userId.toString()}`, 'menuUpdated', {
       restaurantId: req.userId.toString(),
       action: 'create',
-      menuItem 
+      menuItem
     });
     
     
@@ -163,10 +163,10 @@ exports.updateMenuItem = async (req, res, next) => {
     await menuItem.save();
     
     // Emit real-time menu update to restaurant customers
-    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+    socketService.emitToRoom(`restaurant:${req.userId.toString()}`, 'menuUpdated', {
       restaurantId: req.userId.toString(),
       action: 'update',
-      menuItem 
+      menuItem
     });
     
     res.json({
@@ -206,10 +206,10 @@ exports.deleteMenuItem = async (req, res, next) => {
     await MenuItem.findOneAndDelete({ _id: id, restaurant: req.userId });
     
     // Emit real-time menu update to restaurant customers
-    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+    socketService.emitToRoom(`restaurant:${req.userId.toString()}`, 'menuUpdated', {
       restaurantId: req.userId.toString(),
       action: 'delete',
-      menuItemId: id 
+      menuItemId: id
     });
     
     
@@ -240,10 +240,10 @@ exports.toggleMenuItem = async (req, res, next) => {
     await menuItem.save();
     
     // Emit real-time menu update to restaurant customers
-    socketService.emitToRoom(req.userId.toString(), 'menuUpdated', { 
+    socketService.emitToRoom(`restaurant:${req.userId.toString()}`, 'menuUpdated', {
       restaurantId: req.userId.toString(),
       action: 'toggle',
-      menuItem 
+      menuItem
     });
     
     
