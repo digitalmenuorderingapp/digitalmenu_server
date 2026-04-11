@@ -37,10 +37,6 @@ class NotificationService {
         socketService.emitToRoom(roomNamespace, 'newOrder', metadata.orderData || metadata.orderId);
       } else if (type === 'ORDER_UPDATE' || type.startsWith('ORDER_')) {
         socketService.emitToRoom(roomNamespace, 'orderUpdate', metadata.orderData || metadata.orderId);
-        // Also notify customer if deviceId is provided
-        if (metadata.deviceId) {
-           socketService.emitToRoom(`customer:${metadata.deviceId}`, 'orderStatusUpdate', metadata.orderData || metadata.orderId);
-        }
       } else if (type === 'ACCOUNT_STATUS') {
         socketService.emitToRoom(roomNamespace, 'accountStatusUpdate', notification);
       }
