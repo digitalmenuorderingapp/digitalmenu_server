@@ -38,7 +38,8 @@ const notificationSchema = new mongoose.Schema({
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
     orderNumber: String,
     tableNumber: String,
-    amount: Number
+    amount: Number,
+    orderData: { type: mongoose.Schema.Types.Mixed }
   },
   isRead: {
     type: Boolean,
