@@ -74,3 +74,25 @@ exports.getUnreadCount = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Clear all notifications for the current admin
+ */
+exports.clearAll = async (req, res, next) => {
+  try {
+    const recipient = req.userId;
+
+    if (!recipient) {
+      return res.status(400).json({ success: false, message: 'Recipient ID is required' });
+    }
+
+    await Notification.deleteMany({ recipient });
+
+    res.json({
+      success: true,
+      message: 'All notifications cleared'
+    });
+  } catch (error) {
+    next(error);
+  }
+};

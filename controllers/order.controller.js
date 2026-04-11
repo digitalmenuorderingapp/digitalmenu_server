@@ -250,13 +250,31 @@ exports.handleOrderAction = async (req, res, next) => {
 
       const notificationType = typeMap[action] || 'ORDER_UPDATE';
       
+      const getNotificationMessage = () => {
+        if (action === 'COLLECT_PAYMENT' || action === 'VERIFY_PAYMENT' || action === 'CLEAR_DUES') {
+          return `Payment ${update.paymentStatus === 'VERIFIED' ? 'verified' : 'updated'} for Order #${order.orderNumber}`;
+        }
+        if (action === 'REQUEST_RETRY') {
+          return `Payment retry requested for Order #${order.orderNumber}`;
+        }
+        return `Order status changed to ${update.status || order.status} via ${action}`;
+      };
+
+      // Construct more descriptive message
+      let displayMessage = `Order status changed to ${update.status || order.status}`;
+      if (action === 'ACCEPT_ORDER') displayMessage = `Order #${order.orderNumber} Accepted for Table #${order.tableNumber}`;
+      else if (action === 'REJECT_ORDER') displayMessage = `Order #${order.orderNumber} Rejected: ${update.rejectionReason}`;
+      else if (action === 'COMPLETE_ORDER') displayMessage = `Order #${order.orderNumber} Served/Completed`;
+      else if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT' || action === 'CLEAR_DUES') displayMessage = `Payment Received for Order #${order.orderNumber} (Table #${order.tableNumber})`;
+      else if (action === 'REQUEST_RETRY') displayMessage = `Payment Retry requested for Order #${order.orderNumber}`;
+
       // Notification for Admin
       await notificationService.send({
         recipient: room,
         recipientType: 'ADMIN',
         type: notificationType,
         title: `Order #${order.orderNumber} Updated`,
-        message: `Order status changed to ${update.status || order.status} via ${action}`,
+        message: displayMessage,
         metadata: {
           orderId: order._id,
           orderNumber: order.orderNumber,

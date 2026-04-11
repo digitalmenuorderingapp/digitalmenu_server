@@ -12,5 +12,6 @@ router.get('/public/unread-count', notificationController.getUnreadCount);
 router.get('/', protect, notificationController.getNotifications);
 router.post('/mark-read', protect, notificationController.markAsRead);
 router.get('/unread-count', protect, notificationController.getUnreadCount);
+router.delete('/clear-all', protect, notificationController.clearAll);
 
 module.exports = router;
