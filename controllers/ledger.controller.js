@@ -3,7 +3,7 @@ const Order = require('../models/Order');
 const ledgerService = require('../services/ledger.service');
 const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
-const { reportEmailTemplate } = require('../templates/reportEmail');
+
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const { searchReports, getFileFromCloudinary, uploadRawToCloudinary } = require('../utils/cloudinary');
 const ReportService = require('../services/report.service');
@@ -191,50 +191,6 @@ exports.recalculateLedger = async (req, res, next) => {
   }
 };
 
-// Export detailed monthly report
-exports.exportReportToMail = async (req, res, next) => {
-  try {
-    const userId = req.userId;
-    const user = await RestaurantAdmin.findById(userId).lean();
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Restaurant not found' });
-    }
-
-    res.json({
-      success: true,
-      message: `Detailed report is being prepared and will be sent to ${user.email} shortly.`
-    });
-
-    (async () => {
-      try {
-        const moment = require('moment-timezone');
-        const { sendDetailedReportEmail } = require('../utils/reportHelper');
-        
-        const now = moment().tz('Asia/Kolkata');
-        const dateRange = {
-          from: now.clone().startOf('month').format('YYYY-MM-DD'),
-          to: now.format('YYYY-MM-DD'),
-          fromDate: now.clone().startOf('month').toDate(),
-          toDate: now.toDate()
-        };
-
-        await sendDetailedReportEmail({
-          restaurant: user,
-          emailType: 'MONTHLY',
-          dateRange,
-          subject: `${user.restaurantName} - Detailed Monthly Report - ${now.format('MMMM YYYY')}`
-        });
-
-      } catch (bgError) {
-        console.error('[ManualExport] Background export failed:', bgError);
-      }
-    })();
-
-  } catch (error) {
-    next(error);
-  }
-};
 
 // Get available reports from Cloudinary
 exports.getAvailableReports = async (req, res, next) => {

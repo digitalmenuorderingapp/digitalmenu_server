@@ -18,8 +18,6 @@ router.get('/transactions', ledgerController.getTransactions); // ?date=YYYY-MM-
 // Management & Recalculation
 router.post('/recalculate', ledgerController.recalculateLedger);
 
-// Report Export
-router.post('/exportreporttomail', ledgerController.exportReportToMail);
 
 // Available Reports from Cloudinary
 router.get('/available-reports', ledgerController.getAvailableReports);

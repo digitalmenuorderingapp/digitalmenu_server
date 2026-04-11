@@ -2,7 +2,6 @@ const Order = require('../models/Order');
 const ledgerService = require('../services/ledger.service');
 const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
-const { reportEmailTemplate } = require('../templates/reportEmail');
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const notificationService = require('../services/notification.service');
 

@@ -217,7 +217,8 @@ exports.googleSignIn = async (req, res, next) => {
         logo: user.logo,
         role: user.role,
         subscription: user.subscription
-      }
+      },
+      loginMethod: 'google'
     });
   } catch (error) {
     console.error('Google Sign-In error:', error);
@@ -229,191 +230,6 @@ exports.googleSignIn = async (req, res, next) => {
   }
 };
 
-// ========== GOOGLE OAUTH REDIRECT FLOW ==========
-
-// Generate Google OAuth URL and redirect
-exports.googleAuth = async (req, res) => {
-  try {
-    const { deviceId, deviceName } = req.query;
-    const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
-
-    const scopes = [
-      'https://www.googleapis.com/auth/userinfo.profile',
-      'https://www.googleapis.com/auth/userinfo.email'
-    ];
-
-    // Pass deviceInfo smoothly through Google using State 
-    const stateObj = {
-      deviceId: deviceId || 'unknown',
-      deviceName: deviceName || req.headers['user-agent'] || 'Unknown Browser'
-    };
-    const stateParam = Buffer.from(JSON.stringify(stateObj)).toString('base64');
-
-    const authUrl = googleClient.generateAuthUrl({
-      access_type: 'offline',
-      scope: scopes,
-      prompt: 'consent',
-      redirect_uri: redirectUri,
-      state: stateParam
-    });
-
-    res.redirect(authUrl);
-  } catch (error) {
-    console.error('Google Auth URL generation error:', error);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    res.redirect(`${frontendUrl}/auth?mode=register&error=google_auth_failed`);
-  }
-};
-
-// Handle Google OAuth callback
-exports.googleCallback = async (req, res) => {
-  try {
-    const { code } = req.query;
-
-    if (!code) {
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      return res.redirect(`${frontendUrl}/auth?mode=register&error=no_code`);
-    }
-
-    const redirectUri = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`;
-
-    // Exchange code for tokens
-    const { tokens } = await googleClient.getToken({
-      code,
-      redirect_uri: redirectUri
-    });
-
-    // Verify ID token
-    const ticket = await googleClient.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-
-    const payload = ticket.getPayload();
-    const { sub: googleId, email, name, picture } = payload;
-
-    // Get device info from query params (passed through state) or use defaults
-    let deviceId = 'unknown';
-    let deviceName = 'Unknown Browser';
-
-    if (req.query.state) {
-      try {
-        const stateObj = JSON.parse(Buffer.from(req.query.state, 'base64').toString('ascii'));
-        if (stateObj.deviceId) deviceId = stateObj.deviceId;
-        if (stateObj.deviceName) deviceName = stateObj.deviceName;
-      } catch (e) {
-        deviceName = req.headers['user-agent'] || 'Unknown Browser';
-      }
-    } else {
-      deviceName = req.headers['user-agent'] || 'Unknown Browser';
-    }
-
-    // Find or create user
-    let user = await RestaurantAdmin.findOne({ email });
-
-    if (!user) {
-      // Generate shortId
-      const { generateShortId } = require('../utils/id.util');
-      let shortId;
-      let isUnique = false;
-      let attempts = 0;
-
-      while (!isUnique && attempts < 10) {
-        shortId = generateShortId();
-        const existing = await RestaurantAdmin.findOne({ shortId });
-        if (!existing) isUnique = true;
-        attempts++;
-      }
-
-      const trialDays = 90;
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + trialDays);
-      expiryDate.setHours(23, 59, 59, 999);
-
-      const DeletedRestaurant = require('../models/DeletedRestaurant');
-      const preservedRecord = await DeletedRestaurant.findOne({ email });
-
-      let initialSubscription = {
-        type: 'trial',
-        status: 'active',
-        startDate: new Date(),
-        expiryDate: expiryDate
-      };
-
-      if (preservedRecord && preservedRecord.subscription) {
-        initialSubscription = preservedRecord.subscription;
-      }
-
-      // Create new user with Google auth
-      user = await RestaurantAdmin.create({
-        email,
-        googleId,
-        ownerName: name || '',
-        logo: picture || null,
-        shortId: shortId,
-        subscription: initialSubscription
-      });
-    } else if (!user.googleId) {
-      // Link Google to existing local account
-      user.googleId = googleId;
-      await user.save();
-    }
-
-    // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id.toString(), deviceId);
-
-    // Hash and store refresh token
-    const tokenHash = hashToken(refreshToken);
-    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-
-    // Remove any existing tokens for this device
-    user.refreshTokens = user.refreshTokens.filter(rt => rt.deviceId !== deviceId);
-
-    // Add new refresh token
-    user.refreshTokens.push({
-      tokenHash,
-      deviceId: deviceId || 'unknown',
-      deviceName: deviceName || 'Unknown Device',
-      ipAddress,
-      lastSeen: new Date(),
-      isOnline: true,
-      issuedAt: new Date(),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      loginMethod: 'google',
-      sessions: [{
-        loggedInAt: new Date(),
-        loginMethod: 'google'
-      }]
-    });
-
-    await user.save();
-
-    // Set cookies
-    if (process.env.NODE_ENV === 'production') {
-      console.log(`[AUTH] Google Callback - Setting cookies: SameSite=${isProduction ? 'none' : 'lax'}, Secure=${isProduction}`);
-      console.log(`[AUTH] Header Host: ${req.headers.host}, Origin: ${req.headers.origin}`);
-    }
-    res.cookie('accessToken', accessToken, accessCookieOptions);
-    res.cookie('refreshToken', refreshToken, cookieOptions);
-
-    // Log activity
-    await logActivity({
-      type: 'auth',
-      user: user.email,
-      action: 'GOOGLE_LOGIN',
-      details: { deviceId, deviceName, ipAddress }
-    });
-
-    // Redirect to frontend dashboard
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    res.redirect(`${frontendUrl}/admin/dashboard`);
-
-  } catch (error) {
-    console.error('Google Callback error:', error);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    res.redirect(`${frontendUrl}/auth?mode=register&error=google_callback_failed`);
-  }
-};
 
 // ========== LOCAL AUTH (Legacy Support) ==========
 
@@ -480,120 +296,6 @@ exports.setPassword = async (req, res, next) => {
     await user.save();
 
     res.json({ success: true, message: 'Password updated successfully.' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Verify Registration OTP
-exports.verifyOtp = async (req, res, next) => {
-  try {
-    const { email, otp, deviceId, deviceName } = req.body;
-
-    const user = await RestaurantAdmin.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    if (user.isVerified) {
-      return res.status(400).json({ success: false, message: 'User already verified' });
-    }
-
-    if (user.verificationCode !== otp || user.verificationCodeExpires < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
-    }
-
-    // Mark as verified & set up 3-month free trial
-    const { generateShortId } = require('../utils/id.util');
-    let shortId;
-    let isUnique = false;
-    let attempts = 0;
-
-    while (!isUnique && attempts < 10) {
-      shortId = generateShortId();
-      const existing = await RestaurantAdmin.findOne({ shortId });
-      if (!existing) isUnique = true;
-      attempts++;
-    }
-
-    const trialDays = 90;
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + trialDays);
-    expiryDate.setHours(23, 59, 59, 999);
-
-    user.isVerified = true;
-    user.shortId = shortId;
-    user.verificationCode = undefined;
-    user.verificationCodeExpires = undefined;
-
-    const DeletedRestaurant = require('../models/DeletedRestaurant');
-    const preservedRecord = await DeletedRestaurant.findOne({ email });
-    let initialSubscription = {
-      type: 'trial',
-      status: 'active',
-      startDate: new Date(),
-      expiryDate: expiryDate
-    };
-
-    if (preservedRecord && preservedRecord.subscription) {
-      initialSubscription = preservedRecord.subscription;
-    }
-
-    // Set trial initialization
-    user.subscription = initialSubscription;
-
-    await user.save();
-
-    // Now log them in (Generate tokens)
-    const { accessToken, refreshToken } = generateTokens(user._id, deviceId);
-
-    // Initialize refreshTokens array if it doesn't exist
-    if (!user.refreshTokens) user.refreshTokens = [];
-
-    // Create session embedded in RestaurantAdmin
-    const tokenData = {
-      tokenHash: hashToken(refreshToken),
-      deviceId: deviceId || 'unknown',
-      deviceName: deviceName || 'Unknown Device',
-      ipAddress: req.ip || req.connection.remoteAddress,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      isOnline: true,
-      lastSeen: new Date(),
-      loginMethod: 'local',
-      sessions: [{ loggedInAt: new Date(), loginMethod: 'local' }]
-    };
-
-    user.refreshTokens.push(tokenData);
-    await user.save();
-
-    // Log successful registration/verification
-    await logActivity({
-      type: 'user',
-      user: user.email,
-      action: 'Account Verified & Logged In',
-      req
-    });
-
-    // Set cookies
-    res.cookie('accessToken', accessToken, accessCookieOptions);
-    res.cookie('refreshToken', refreshToken, cookieOptions);
-
-    res.status(200).json({
-      success: true,
-      message: 'Email verified and login successful',
-      user: {
-        id: user._id,
-        email: user.email,
-        restaurantName: user.restaurantName,
-        ownerName: user.ownerName,
-        address: user.address,
-        phone: user.phone,
-        motto: user.motto,
-        logo: user.logo,
-        shortId: user.shortId,
-        subscription: await checkSubscriptionStatus(user)
-      }
-    });
   } catch (error) {
     next(error);
   }
@@ -692,6 +394,7 @@ exports.login = async (req, res, next) => {
     res.json({
       success: true,
       message: 'Login successful',
+      loginMethod: 'local',
       user: {
         id: user._id,
         email: user.email,
@@ -709,7 +412,6 @@ exports.login = async (req, res, next) => {
     next(error);
   }
 };
-
 // Logout
 exports.logout = async (req, res, next) => {
   try {
@@ -869,6 +571,7 @@ exports.refresh = async (req, res, next) => {
   }
 };
 
+
 // Get current user
 exports.getMe = async (req, res, next) => {
   try {
@@ -978,109 +681,6 @@ exports.logoutDevice = async (req, res, next) => {
       success: true,
       message: 'Device logged out successfully'
     });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Forgot Password - Send OTP
-exports.forgotPassword = async (req, res, next) => {
-  try {
-    const { email } = req.body;
-    const user = await RestaurantAdmin.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.resetPasswordOtp = otp;
-    user.resetPasswordOtpExpires = Date.now() + 15 * 60 * 1000;
-    await user.save();
-
-    await emailService.sendEmail({
-      to: email,
-      subject: 'DigitalMenu - Password Reset OTP',
-      html: resetPasswordOtpTemplate(otp)
-    });
-
-    res.json({ success: true, message: 'Password reset OTP sent to your email' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Reset Password with OTP
-exports.resetPassword = async (req, res, next) => {
-  try {
-    const { email, otp, newPassword } = req.body;
-
-    const user = await RestaurantAdmin.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    if (user.resetPasswordOtp !== otp || user.resetPasswordOtpExpires < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
-    }
-
-    user.password = newPassword;
-    user.resetPasswordOtp = undefined;
-    user.resetPasswordOtpExpires = undefined;
-    await user.save();
-
-    res.json({ success: true, message: 'Password reset successful. You can now login.' });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Resend Verification OTP
-exports.resendOtp = async (req, res, next) => {
-  try {
-    const { email } = req.body;
-    const user = await RestaurantAdmin.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    if (user.isVerified) {
-      return res.status(400).json({ success: false, message: 'User already verified' });
-    }
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.verificationCode = otp;
-    user.verificationCodeExpires = Date.now() + 10 * 60 * 1000;
-    await user.save();
-
-    // Try to send email
-    let emailSent = false;
-    let emailError = null;
-    try {
-      const result = await emailService.sendEmail({
-        to: email,
-        subject: 'DigitalMenu - Verification Code',
-        html: registerOtpTemplate(otp)
-      });
-      emailSent = result && (result.sent || result.messageId || result.id);
-      if (!emailSent) {
-        emailError = result?.error || 'Email service returned no confirmation';
-      }
-    } catch (err) {
-      emailError = err.message;
-      console.error('[ResendOTP] Email send failed:', err.message);
-    }
-
-    if (!emailSent) {
-      return res.status(500).json({
-        success: false,
-        message: `Failed to send verification email: ${emailError}. Please try again or contact support.`,
-        emailError: emailError
-      });
-    }
-
-    res.json({ success: true, message: 'A new verification code has been sent.' });
   } catch (error) {
     next(error);
   }

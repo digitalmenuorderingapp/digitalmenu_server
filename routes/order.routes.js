@@ -4,7 +4,7 @@ const orderController = require('../controllers/order.controller');
 const { protect } = require('../middleware/auth.middleware');
 const { validateOrder } = require('../middleware/validation.middleware');
 
-const { trackUserActivity } = require('../middleware/userTracker');
+const { trackActivity } = require('../middleware/activity.middleware');
 const { checkSubscription } = require('../middleware/subscription');
 
 // Protected admin order creation (must be before public routes)
@@ -25,7 +25,7 @@ router.post('/public/:id/retry-payment', orderController.retryPayment);
 router.put('/:id/cancel', orderController.cancelOrder);
 
 // Protected admin routes
-router.use(protect, trackUserActivity);
+router.use(protect, trackActivity);
 
 // Report & Analytics
 router.get('/', orderController.getAllOrders);

@@ -1,7 +1,11 @@
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const Superadmin = require('../models/Superadmin');
 const Order = require('../models/Order');
-const { generateOTP } = require('../utils/otp.util');
+// Helper: Generate OTP (moved from defunct otp.util)
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
 const emailService = require('../services/email.service');
 const jwt = require('jsonwebtoken');
 const { hashToken } = require('../utils/token');
