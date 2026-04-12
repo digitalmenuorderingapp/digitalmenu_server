@@ -17,16 +17,16 @@ const getEnrichedOrder = async (order) => {
 // Create order - Optimized for speed
 exports.createOrder = async (req, res, next) => {
   try {
-    const { 
-      tableNumber, 
-      customerName, 
+    const {
+      tableNumber,
+      customerName,
       customerPhone,
-      deviceId, 
-      sessionId, 
-      items, 
-      totalAmount, 
-      paymentMethod, 
-      utr, 
+      deviceId,
+      sessionId,
+      items,
+      totalAmount,
+      paymentMethod,
+      utr,
       restaurantId,
       orderType = 'dine-in',
       numberOfPersons,
@@ -73,7 +73,7 @@ exports.createOrder = async (req, res, next) => {
     if (io) {
       const targetId = restaurantId || req.userId;
       const roomId = targetId?.toString();
-      
+
       // Persist and emit notification
       await notificationService.send({
         recipient: roomId,
@@ -123,7 +123,7 @@ exports.handleOrderAction = async (req, res, next) => {
         update.collectedAt = new Date();
         update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
         update.paymentVerificationRequestbycustomer = undefined;
-        
+
         isPaymentAction = true;
         break;
 
@@ -148,7 +148,7 @@ exports.handleOrderAction = async (req, res, next) => {
         update.unpaidReason = payload.reason;
         update.utr = undefined; // Clear UTR on unpaid status
         update.paymentVerificationRequestbycustomer = undefined; // Clear retry state
-        
+
         isPaymentAction = true;
         break;
 
@@ -157,7 +157,7 @@ exports.handleOrderAction = async (req, res, next) => {
           return res.status(400).json({ success: false, message: "Only PLACED orders can be accepted." });
         }
         update.status = "ACCEPTED";
-        
+
         isPaymentAction = true;
         break;
 
@@ -191,7 +191,7 @@ exports.handleOrderAction = async (req, res, next) => {
           update.utr = undefined; // Clear UTR for CASH collection
         }
         update.paymentVerificationRequestbycustomer = undefined;
-        
+
         isPaymentAction = true;
         break;
 
@@ -206,7 +206,7 @@ exports.handleOrderAction = async (req, res, next) => {
           update.utr = undefined; // Clear UTR for CASH clearing
         }
         update.paymentVerificationRequestbycustomer = undefined;
-                
+
         isPaymentAction = true;
         break;
 
@@ -224,10 +224,10 @@ exports.handleOrderAction = async (req, res, next) => {
     // Sync with Ledger if verified payment or status change occurs
     const syncRelevantStates = ['COMPLETED', 'REJECTED', 'ACCEPTED'];
     if (isPaymentAction || syncRelevantStates.includes(update.status)) {
-        ledgerService.recordTransaction({
-            order: updatedOrder,
-            createdAt: updatedOrder.createdAt
-        }).catch(err => console.error('[OrderController] Ledger sync failed:', err));
+      ledgerService.recordTransaction({
+        order: updatedOrder,
+        createdAt: updatedOrder.createdAt
+      }).catch(err => console.error('[OrderController] Ledger sync failed:', err));
     }
 
     const enrichedOrder = await getEnrichedOrder(updatedOrder);
@@ -236,7 +236,7 @@ exports.handleOrderAction = async (req, res, next) => {
     const io = req.app.get('io');
     if (io) {
       const room = enrichedOrder.restaurant.toString();
-      
+
       // Map action to specific types for better UI handling
       const typeMap = {
         'ACCEPT_ORDER': 'ORDER_ACCEPTED',
@@ -249,7 +249,7 @@ exports.handleOrderAction = async (req, res, next) => {
       };
 
       const notificationType = typeMap[action] || 'ORDER_UPDATE';
-      
+
       const getNotificationMessage = () => {
         if (action === 'COLLECT_PAYMENT' || action === 'VERIFY_PAYMENT' || action === 'CLEAR_DUES') {
           return `Payment ${update.paymentStatus === 'VERIFIED' ? 'verified' : 'updated'} for Order #${order.orderNumber}`;
@@ -371,8 +371,8 @@ exports.updateCustomerProfile = async (req, res, next) => {
 
     // Update all pending orders for this device
     const result = await Order.updateMany(
-      { 
-        deviceId, 
+      {
+        deviceId,
         status: { $in: ['placed', 'preparing'] } // Only update active orders
       },
       {
@@ -396,7 +396,7 @@ exports.updateCustomerProfile = async (req, res, next) => {
       const enrichedOrders = await Promise.all(
         updatedOrders.map(o => getEnrichedOrder(o))
       );
-      
+
       // Group by restaurant and emit
       const ordersByRestaurant = enrichedOrders.reduce((acc, order) => {
         const restId = order.restaurant?.toString();
@@ -574,11 +574,6 @@ exports.retryPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Enforce retry limit
-    if ((order.paymentVerificationRequestbycustomer?.retrycount || 0) >= 3) {
-      return res.status(400).json({ success: false, message: 'Maximum payment verification attempts reached. Please visit the counter.' });
-    }
-
     // Update payment details
     if (paymentMethod) {
       order.collectedVia = paymentMethod;
@@ -639,11 +634,6 @@ exports.applyOnlinePayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found or access denied.' });
     }
 
-    // Enforce retry limit
-    if ((order.paymentVerificationRequestbycustomer?.retrycount || 0) >= 3) {
-      return res.status(400).json({ success: false, message: 'Maximum payment verification attempts reached. Please visit the counter.' });
-    }
-
     // Update payment details to Online
     order.collectedVia = 'ONLINE';
     if (!order.paymentVerificationRequestbycustomer) order.paymentVerificationRequestbycustomer = {};
@@ -692,10 +682,10 @@ exports.applyOnlinePayment = async (req, res, next) => {
       }
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Online payment applied successfully. Please wait for restaurant verification.', 
-      data: enrichedOrder 
+    res.json({
+      success: true,
+      message: 'Online payment applied successfully. Please wait for restaurant verification.',
+      data: enrichedOrder
     });
   } catch (error) {
     next(error);
@@ -741,7 +731,7 @@ exports.cancelOrder = async (req, res, next) => {
 
     order.status = 'CANCELLED';
     order.cancellationReason = reason || bodyReason || 'Order cancelled by customer';
-    
+
     await order.save();
 
 
