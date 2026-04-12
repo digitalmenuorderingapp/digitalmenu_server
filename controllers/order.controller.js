@@ -574,6 +574,11 @@ exports.retryPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
+    // Enforce retry limit
+    if ((order.paymentVerificationRequestbycustomer?.retrycount || 0) >= 3) {
+      return res.status(400).json({ success: false, message: 'Maximum payment verification attempts reached. Please visit the counter.' });
+    }
+
     // Update payment details
     if (paymentMethod) {
       order.collectedVia = paymentMethod;
@@ -632,6 +637,11 @@ exports.applyOnlinePayment = async (req, res, next) => {
 
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found or access denied.' });
+    }
+
+    // Enforce retry limit
+    if ((order.paymentVerificationRequestbycustomer?.retrycount || 0) >= 3) {
+      return res.status(400).json({ success: false, message: 'Maximum payment verification attempts reached. Please visit the counter.' });
     }
 
     // Update payment details to Online
