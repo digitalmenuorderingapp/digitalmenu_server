@@ -457,11 +457,23 @@ exports.getOrdersByTable = async (req, res, next) => {
 // Get all orders (admin) - Optimized with optional stats
 exports.getAllOrders = async (req, res, next) => {
   try {
-    const { search, status, date, month, year, paymentMethod, includeStats = 'true' } = req.query;
+    const { search, status, paymentStatus, date, month, year, paymentMethod, includeStats = 'true' } = req.query;
 
-    // Build query - convert userId to ObjectId for aggregation compatibility
+    // Build query - safely handle req.userId
     const mongoose = require('mongoose');
-    let query = { restaurant: new mongoose.Types.ObjectId(req.userId) };
+    if (!req.userId) {
+      return res.status(401).json({ success: false, message: 'Not authorized' });
+    }
+    
+    let userId;
+    try {
+      userId = typeof req.userId === 'string' ? new mongoose.Types.ObjectId(req.userId) : req.userId;
+    } catch (e) {
+      console.error('[GEAllOrders] Invalid userId format:', req.userId);
+      return res.status(400).json({ success: false, message: 'Invalid user identity' });
+    }
+
+    let query = { restaurant: userId };
 
     // Search by order number (5-digit) or table number
     if (search) {
@@ -475,8 +487,15 @@ exports.getAllOrders = async (req, res, next) => {
     }
 
     // Filter by status
-    if (status && ['placed', 'preparing', 'served'].includes(status)) {
-      query.status = status;
+    if (status) {
+      const statusArray = status.split(',').map(s => s.trim().toUpperCase());
+      query.status = { $in: statusArray };
+    }
+
+    // Filter by payment status
+    if (paymentStatus) {
+      const payStatusArray = paymentStatus.split(',').map(s => s.trim().toUpperCase());
+      query.paymentStatus = { $in: payStatusArray };
     }
 
     // Filter by payment method
