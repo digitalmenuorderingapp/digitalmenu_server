@@ -17,12 +17,25 @@ const orderItemSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  originalPrice: {
+    type: Number,
+    min: 0
+  },
+  offerPrice: {
+    type: Number,
+    min: 0
+  },
   quantity: {
     type: Number,
     required: true,
     min: 1,
     max: 99
-  }
+  },
+  // Tax percentages for display
+  sgstPercentage: { type: Number, default: 0 },
+  cgstPercentage: { type: Number, default: 0 },
+  igstPercentage: { type: Number, default: 0 },
+  serviceChargePercentage: { type: Number, default: 0 }
 }, { _id: false });
 
 const orderSchema = new mongoose.Schema({
@@ -104,6 +117,11 @@ const orderSchema = new mongoose.Schema({
     }
   },
   totalAmount: Number,
+  subtotal: { type: Number, default: 0 },
+  sgstAmount: { type: Number, default: 0 },
+  cgstAmount: { type: Number, default: 0 },
+  igstAmount: { type: Number, default: 0 },
+  serviceChargeAmount: { type: Number, default: 0 },
   utr: { type: String, default: '' },
 
   status: {

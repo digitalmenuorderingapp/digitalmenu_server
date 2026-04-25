@@ -1,4 +1,6 @@
 const Order = require('../models/Order');
+const MenuItem = require('../models/MenuItem');
+const GSTConfig = require('../models/GSTConfig');
 const ledgerService = require('../services/ledger.service');
 const excelHelper = require('../helpers/excel.helper');
 const emailService = require('../services/email.service');
@@ -33,16 +35,91 @@ exports.createOrder = async (req, res, next) => {
       specialInstructions
     } = req.body;
 
-    // 1. Create order
+    // 1. Calculate tax breakdown using restaurant GST config
+    let subtotal = 0;
+    let totalSgst = 0;
+    let totalCgst = 0;
+    let totalIgst = 0;
+    let totalServiceCharge = 0;
+
+    const restaurantIdVal = restaurantId || req.userId;
+
+    // Fetch restaurant GST config
+    const gstConfig = await GSTConfig.findOne({ restaurant: restaurantIdVal });
+
+    // Fetch menu items to get originalPrice and offerPrice
+    const menuItemIds = items.map(item => item.itemId);
+    const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+    const menuItemMap = new Map(menuItems.map(mi => [mi._id.toString(), mi]));
+
+    // Calculate subtotal from items and enrich with menu item prices
+    for (const item of items) {
+      const menuItem = menuItemMap.get(item.itemId);
+      if (menuItem) {
+        // Use frontend values if provided, otherwise fallback to menu item database
+        item.originalPrice = item.originalPrice || menuItem.price;
+        item.offerPrice = item.offerPrice !== undefined ? item.offerPrice : (menuItem.offerPrice || null);
+        item.price = item.offerPrice || item.originalPrice || menuItem.price;
+      }
+      const itemTotal = item.price * item.quantity;
+      subtotal += itemTotal;
+    }
+
+    // Apply tax and service charge from restaurant config if enabled
+    if (gstConfig) {
+      console.log('[Order] GST config found:', gstConfig);
+      if (gstConfig.gstEnabled) {
+        totalSgst = (subtotal * (gstConfig.sgstPercentage || 0)) / 100;
+        totalCgst = (subtotal * (gstConfig.cgstPercentage || 0)) / 100;
+        totalIgst = (subtotal * (gstConfig.igstPercentage || 0)) / 100;
+        console.log('[Order] Taxes calculated - SGST:', totalSgst, 'CGST:', totalCgst, 'IGST:', totalIgst);
+      }
+      if (gstConfig.serviceChargeEnabled) {
+        totalServiceCharge = (subtotal * (gstConfig.serviceChargePercentage || 0)) / 100;
+      }
+    } else {
+      console.log('[Order] No GST config found for restaurant:', restaurantIdVal);
+    }
+
+    // Round to 2 decimal places
+    subtotal = Math.round(subtotal * 100) / 100;
+    totalSgst = Math.round(totalSgst * 100) / 100;
+    totalCgst = Math.round(totalCgst * 100) / 100;
+    totalIgst = Math.round(totalIgst * 100) / 100;
+    totalServiceCharge = Math.round(totalServiceCharge * 100) / 100;
+
+    // Enrich items with originalPrice, offerPrice, and tax percentages from GST config
+    const enrichedItems = items.map(item => {
+      return {
+        ...item,
+        itemId: item.itemId,
+        name: item.name,
+        originalPrice: item.originalPrice || item.price,
+        offerPrice: item.offerPrice !== undefined ? item.offerPrice : null,
+        price: item.price,
+        quantity: item.quantity,
+        sgstPercentage: gstConfig && gstConfig.gstEnabled ? (gstConfig.sgstPercentage || 0) : 0,
+        cgstPercentage: gstConfig && gstConfig.gstEnabled ? (gstConfig.cgstPercentage || 0) : 0,
+        igstPercentage: gstConfig && gstConfig.gstEnabled ? (gstConfig.igstPercentage || 0) : 0,
+        serviceChargePercentage: gstConfig && gstConfig.serviceChargeEnabled ? (gstConfig.serviceChargePercentage || 0) : 0
+      };
+    });
+
+    // 2. Create order
     const order = await Order.create({
-      restaurant: restaurantId || req.userId,
+      restaurant: restaurantIdVal,
       tableNumber: orderType === 'dine-in' ? tableNumber : undefined,
       customerName,
       customerPhone,
       deviceId,
       sessionId,
-      items,
+      items: enrichedItems,
       totalAmount,
+      subtotal,
+      sgstAmount: totalSgst,
+      cgstAmount: totalCgst,
+      igstAmount: totalIgst,
+      serviceChargeAmount: totalServiceCharge,
       paymentVerificationRequestbycustomer: {
         applied: paymentMethod === 'ONLINE',
         appliedUTR: (paymentMethod === 'ONLINE' && utr) ? utr.substring(0, 6) : ''
@@ -71,7 +148,7 @@ exports.createOrder = async (req, res, next) => {
     // Fire-and-forget socket emission
     const io = req.app.get('io');
     if (io) {
-      const targetId = restaurantId || req.userId;
+      const targetId = restaurantIdVal;
       const roomId = targetId?.toString();
 
       // Persist and emit notification

@@ -158,6 +158,7 @@ app.use('/api/public', require('./routes/public.routes'));
 app.use('/api/superadmin', require('./routes/superadmin.routes'));
 app.use('/api/server-monitoring', require('./routes/serverMonitoring.routes'));
 app.use('/api/notifications', require('./routes/notification.routes'));
+app.use('/api/gst-config', require('./routes/gstConfig.routes'));
 
 
 // Health check endpoint
@@ -180,7 +181,7 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5005;
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

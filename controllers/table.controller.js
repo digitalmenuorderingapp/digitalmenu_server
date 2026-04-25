@@ -1,7 +1,7 @@
 const QRCode = require('qrcode');
 const Table = require('../models/Table');
 
-const FRONTEND_URL = process.env.ADMIN_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.ADMIN_URL || 'http://localhost:7000';
 
 // Get all tables
 exports.getAllTables = async (req, res, next) => {
