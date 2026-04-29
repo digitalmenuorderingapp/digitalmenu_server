@@ -12,8 +12,6 @@ exports.getGSTConfig = async (req, res, next) => {
         cgstPercentage: 0,
         igstPercentage: 0,
         serviceChargePercentage: 0,
-        taxOnServiceCharge: false,
-        taxOnServiceChargePercentage: 0,
         gstEnabled: false,
         serviceChargeEnabled: false
       };
@@ -36,8 +34,6 @@ exports.updateGSTConfig = async (req, res, next) => {
       cgstPercentage,
       igstPercentage,
       serviceChargePercentage,
-      taxOnServiceCharge,
-      taxOnServiceChargePercentage,
       gstEnabled,
       serviceChargeEnabled
     } = req.body;
@@ -50,8 +46,6 @@ exports.updateGSTConfig = async (req, res, next) => {
       config.cgstPercentage = parseFloat(cgstPercentage) || 0;
       config.igstPercentage = parseFloat(igstPercentage) || 0;
       config.serviceChargePercentage = parseFloat(serviceChargePercentage) || 0;
-      config.taxOnServiceCharge = taxOnServiceCharge === 'true' || taxOnServiceCharge === true;
-      config.taxOnServiceChargePercentage = parseFloat(taxOnServiceChargePercentage) || 0;
       config.gstEnabled = gstEnabled === 'true' || gstEnabled === true;
       config.serviceChargeEnabled = serviceChargeEnabled === 'true' || serviceChargeEnabled === true;
       await config.save();
@@ -63,8 +57,6 @@ exports.updateGSTConfig = async (req, res, next) => {
         cgstPercentage: parseFloat(cgstPercentage) || 0,
         igstPercentage: parseFloat(igstPercentage) || 0,
         serviceChargePercentage: parseFloat(serviceChargePercentage) || 0,
-        taxOnServiceCharge: taxOnServiceCharge === 'true' || taxOnServiceCharge === true,
-        taxOnServiceChargePercentage: parseFloat(taxOnServiceChargePercentage) || 0,
         gstEnabled: gstEnabled === 'true' || gstEnabled === true,
         serviceChargeEnabled: serviceChargeEnabled === 'true' || serviceChargeEnabled === true
       });

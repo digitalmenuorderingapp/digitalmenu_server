@@ -36,11 +36,14 @@ exports.createOrder = async (req, res, next) => {
     } = req.body;
 
     // 1. Calculate tax breakdown using restaurant GST config
-    let subtotal = 0;
+    let itemsSubtotal = 0;
     let totalSgst = 0;
     let totalCgst = 0;
     let totalIgst = 0;
     let totalServiceCharge = 0;
+    let taxableAmount = 0;
+    let grandTotal = 0;
+    let roundOff = 0;
 
     const restaurantIdVal = restaurantId || req.userId;
 
@@ -52,7 +55,7 @@ exports.createOrder = async (req, res, next) => {
     const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
     const menuItemMap = new Map(menuItems.map(mi => [mi._id.toString(), mi]));
 
-    // Calculate subtotal from items and enrich with menu item prices
+    // Calculate items subtotal from items and enrich with menu item prices
     for (const item of items) {
       const menuItem = menuItemMap.get(item.itemId);
       if (menuItem) {
@@ -62,31 +65,45 @@ exports.createOrder = async (req, res, next) => {
         item.price = item.offerPrice || item.originalPrice || menuItem.price;
       }
       const itemTotal = item.price * item.quantity;
-      subtotal += itemTotal;
+      itemsSubtotal += itemTotal;
     }
 
-    // Apply tax and service charge from restaurant config if enabled
-    if (gstConfig) {
-      console.log('[Order] GST config found:', gstConfig);
-      if (gstConfig.gstEnabled) {
-        totalSgst = (subtotal * (gstConfig.sgstPercentage || 0)) / 100;
-        totalCgst = (subtotal * (gstConfig.cgstPercentage || 0)) / 100;
-        totalIgst = (subtotal * (gstConfig.igstPercentage || 0)) / 100;
-        console.log('[Order] Taxes calculated - SGST:', totalSgst, 'CGST:', totalCgst, 'IGST:', totalIgst);
-      }
-      if (gstConfig.serviceChargeEnabled) {
-        totalServiceCharge = (subtotal * (gstConfig.serviceChargePercentage || 0)) / 100;
-      }
+    // Round items subtotal to 2 decimal places
+    itemsSubtotal = Math.round(itemsSubtotal * 100) / 100;
+
+    // Apply service charge from restaurant config if enabled (calculate on items subtotal, round to whole number)
+    if (gstConfig && gstConfig.serviceChargeEnabled) {
+      totalServiceCharge = Math.round((itemsSubtotal * (gstConfig.serviceChargePercentage || 0)) / 100);
+      console.log('[Order] Service charge calculated (rounded):', totalServiceCharge);
+    }
+
+    // Calculate taxable amount (items subtotal + service charge)
+    taxableAmount = itemsSubtotal + totalServiceCharge;
+    console.log('[Order] Taxable amount calculated:', taxableAmount, '(Items Subtotal:', itemsSubtotal, '+ Service Charge:', totalServiceCharge, ')');
+
+    // Apply GST on taxable amount if enabled
+    if (gstConfig && gstConfig.gstEnabled) {
+      totalSgst = (taxableAmount * (gstConfig.sgstPercentage || 0)) / 100;
+      totalCgst = (taxableAmount * (gstConfig.cgstPercentage || 0)) / 100;
+      totalIgst = (taxableAmount * (gstConfig.igstPercentage || 0)) / 100;
+      console.log('[Order] Taxes calculated on taxable amount - SGST:', totalSgst, 'CGST:', totalCgst, 'IGST:', totalIgst);
     } else {
-      console.log('[Order] No GST config found for restaurant:', restaurantIdVal);
+      console.log('[Order] GST is disabled in config');
     }
 
-    // Round to 2 decimal places
-    subtotal = Math.round(subtotal * 100) / 100;
+    // Round taxes to 2 decimal places
     totalSgst = Math.round(totalSgst * 100) / 100;
     totalCgst = Math.round(totalCgst * 100) / 100;
     totalIgst = Math.round(totalIgst * 100) / 100;
-    totalServiceCharge = Math.round(totalServiceCharge * 100) / 100;
+
+    // Calculate grand total (taxable amount + taxes)
+    grandTotal = taxableAmount + totalSgst + totalCgst + totalIgst;
+    console.log('[Order] Grand total calculated:', grandTotal, '(Taxable Amount:', taxableAmount, '+ Taxes:', totalSgst + totalCgst + totalIgst, ')');
+
+    // Calculate round off (difference between rounded grand total and actual grand total)
+    const roundedGrandTotal = Math.round(grandTotal);
+    roundOff = roundedGrandTotal - grandTotal;
+    console.log('[Order] Round off calculated:', roundOff, '(Rounded:', roundedGrandTotal, '- Actual:', grandTotal, ')');
 
     // Enrich items with originalPrice, offerPrice, and tax percentages from GST config
     const enrichedItems = items.map(item => {
@@ -114,12 +131,16 @@ exports.createOrder = async (req, res, next) => {
       deviceId,
       sessionId,
       items: enrichedItems,
-      totalAmount,
-      subtotal,
+      totalAmount: roundedGrandTotal,
+      subtotal: itemsSubtotal,
+      taxableAmount: taxableAmount,
       sgstAmount: totalSgst,
       cgstAmount: totalCgst,
       igstAmount: totalIgst,
       serviceChargeAmount: totalServiceCharge,
+      roundOff: roundOff,
+      grandTotal: grandTotal,
+      gstEnabled: gstConfig?.gstEnabled || false,
       paymentVerificationRequestbycustomer: {
         applied: paymentMethod === 'ONLINE',
         appliedUTR: (paymentMethod === 'ONLINE' && utr) ? utr.substring(0, 6) : ''
@@ -411,7 +432,10 @@ exports.getOrdersByDevice = async (req, res, next) => {
       orderType: 1, totalAmount: 1, status: 1, paymentStatus: 1, paymentMethod: 1,
       collectedVia: 1, createdAt: 1, updatedAt: 1, items: 1, deviceId: 1, utr: 1,
       specialInstructions: 1, paymentDueStatus: 1, rejectionReason: 1,
-      cancellationReason: 1, unpaidReason: 1, feedback: 1, restaurant: 1
+      cancellationReason: 1, unpaidReason: 1, feedback: 1, restaurant: 1,
+      // Tax and billing fields
+      subtotal: 1, taxableAmount: 1, sgstAmount: 1, cgstAmount: 1, igstAmount: 1,
+      serviceChargeAmount: 1, roundOff: 1, grandTotal: 1, gstEnabled: 1
     };
 
     const orders = await Order.find(query)
@@ -598,7 +622,10 @@ exports.getAllOrders = async (req, res, next) => {
       collectedVia: 1, createdAt: 1, updatedAt: 1, items: 1, deviceId: 1, utr: 1,
       specialInstructions: 1, paymentDueStatus: 1, rejectionReason: 1,
       cancellationReason: 1, unpaidReason: 1, feedback: 1,
-      paymentVerificationRequestbycustomer: 1
+      paymentVerificationRequestbycustomer: 1,
+      // Tax and billing fields
+      subtotal: 1, taxableAmount: 1, sgstAmount: 1, cgstAmount: 1, igstAmount: 1,
+      serviceChargeAmount: 1, roundOff: 1, grandTotal: 1, gstEnabled: 1
     };
 
     // 1. Fetch orders with projection (much faster)

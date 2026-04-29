@@ -118,10 +118,14 @@ const orderSchema = new mongoose.Schema({
   },
   totalAmount: Number,
   subtotal: { type: Number, default: 0 },
+  taxableAmount: { type: Number, default: 0 },
   sgstAmount: { type: Number, default: 0 },
   cgstAmount: { type: Number, default: 0 },
   igstAmount: { type: Number, default: 0 },
   serviceChargeAmount: { type: Number, default: 0 },
+  roundOff: { type: Number, default: 0 },
+  grandTotal: { type: Number, default: 0 },
+  gstEnabled: { type: Boolean, default: false },
   utr: { type: String, default: '' },
 
   status: {
