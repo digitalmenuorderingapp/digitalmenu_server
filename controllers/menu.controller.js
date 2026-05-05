@@ -72,7 +72,7 @@ exports.getMenuItem = async (req, res, next) => {
 // Create menu item
 exports.createMenuItem = async (req, res, next) => {
   try {
-    const { name, description, price, offerPrice, foodType } = req.body;
+    const { name, description, price, foodType } = req.body;
     
     let imageUrls = [];
     
@@ -88,7 +88,6 @@ exports.createMenuItem = async (req, res, next) => {
       name,
       description,
       price: parseFloat(price),
-      offerPrice: offerPrice ? parseFloat(offerPrice) : null,
       images: imageUrls,
       foodType: foodType || 'Main Course',
       isVeg: req.body.isVeg === 'true',
@@ -117,7 +116,7 @@ exports.createMenuItem = async (req, res, next) => {
 exports.updateMenuItem = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, description, price, offerPrice, isActive, foodType, removedImages } = req.body;
+    const { name, description, price, isActive, foodType, removedImages } = req.body;
     
     const menuItem = await MenuItem.findOne({ _id: id, restaurant: req.userId });
     
@@ -154,7 +153,6 @@ exports.updateMenuItem = async (req, res, next) => {
     if (name !== undefined) menuItem.name = name;
     if (description !== undefined) menuItem.description = description;
     if (price !== undefined) menuItem.price = parseFloat(price);
-    if (offerPrice !== undefined) menuItem.offerPrice = offerPrice ? parseFloat(offerPrice) : null;
     if (isActive !== undefined) menuItem.isActive = isActive;
     if (foodType !== undefined) menuItem.foodType = foodType;
     if (req.body.isVeg !== undefined) menuItem.isVeg = req.body.isVeg === 'true';

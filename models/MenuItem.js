@@ -27,17 +27,6 @@ const menuItemSchema = new mongoose.Schema({
     required: [true, 'Price is required'],
     min: [0, 'Price cannot be negative']
   },
-  offerPrice: {
-    type: Number,
-    min: [0, 'Offer price cannot be negative'],
-    default: null
-  },
-  discountPercentage: {
-    type: Number,
-    min: [0, 'Discount cannot be negative'],
-    max: [100, 'Discount cannot exceed 100'],
-    default: 0
-  },
   isActive: {
     type: Boolean,
     default: true
@@ -60,41 +49,6 @@ const menuItemSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Calculate discount percentage before saving
-menuItemSchema.pre('save', function(next) {
-  if (this.offerPrice && this.price > 0) {
-    this.discountPercentage = Math.round(((this.price - this.offerPrice) / this.price) * 100);
-  } else {
-    this.discountPercentage = 0;
-  }
-  next();
-});
-
-// Update discount on update
-menuItemSchema.pre('findOneAndUpdate', function(next) {
-  const update = this.getUpdate();
-  if (update.offerPrice !== undefined && update.price !== undefined) {
-    if (update.offerPrice && update.price > 0) {
-      update.discountPercentage = Math.round(((update.price - update.offerPrice) / update.price) * 100);
-    } else if (update.price > 0) {
-      update.discountPercentage = 0;
-    }
-  } else if (update.offerPrice !== undefined) {
-    // Need to get current price from document
-    this.model.findOne(this.getQuery()).then(doc => {
-      const price = update.price !== undefined ? update.price : doc.price;
-      if (update.offerPrice && price > 0) {
-        update.discountPercentage = Math.round(((price - update.offerPrice) / price) * 100);
-      } else {
-        update.discountPercentage = 0;
-      }
-      this.setUpdate(update);
-      next();
-    });
-    return;
-  }
-  next();
-});
 
 // Indexes for efficient queries
 menuItemSchema.index({ restaurant: 1, isActive: 1 });

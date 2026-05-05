@@ -39,10 +39,7 @@ exports.validateMenuItem = [
   body('price')
     .isFloat({ min: 0 })
     .withMessage('Price must be a positive number'),
-  body('offerPrice')
-    .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Offer price must be a positive number'),
+
   body('description')
     .optional()
     .trim()

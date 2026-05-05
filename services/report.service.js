@@ -76,7 +76,7 @@ const applyStatusHighlights = (cell, value, type) => {
  */
 const createMenuItemsSheet = (workbook, menuItems) => {
     const sheet = workbook.addWorksheet('Menu Items');
-    const headers = ['Name', 'Description', 'Category', 'Food Type', 'Price', 'Offer Price', 'Is Active', 'Created At'];
+    const headers = ['Name', 'Description', 'Category', 'Food Type', 'Price', 'Is Active', 'Created At'];
     
     const hRow = sheet.addRow(headers);
     hRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -90,13 +90,11 @@ const createMenuItemsSheet = (workbook, menuItems) => {
             item.category || '-',
             (item.foodType || 'VEG').toUpperCase(),
             formatCurrencyValue(item.price),
-            formatCurrencyValue(item.offerPrice) || '-',
             item.isActive ? 'Yes' : 'No',
             formatDateIST(item.createdAt)
         ]);
         
         row.getCell(5).numFmt = '₹#,##0.00';
-        if (item.offerPrice) row.getCell(6).numFmt = '₹#,##0.00';
     });
 
     applyZebraStriping(sheet, 2, sheet.rowCount, headers.length);
@@ -178,7 +176,7 @@ const generateReport = async (restaurant, orders, options = {}) => {
     const txHeaders = [
         'Date', 'Time', 'Order No', 'Table No', 'Customer Name', 'Persons', 
         'Items', 'Qty', 'Order Type', 'Collected Via', 
-        'Payment Status', 'Order Status', 'Order Value', 'Online Amount', 
+        'Payment Status', 'Order Status', 'Item Total', 'Tax Amount', 'Order Value', 'Online Amount', 
         'Cash Amount', 'Revenue', 'Running Balance', 'Unpaid Amount', 
         'Rejection Reason', 'Cancel Reason', 'Unpaid Reason', 'Feedback', 'Rating',
         'Collected at'
@@ -199,10 +197,16 @@ const generateReport = async (restaurant, orders, options = {}) => {
         const isVerified = order.paymentStatus === 'VERIFIED';
         const isServed = order.status === 'COMPLETED';
         const isRejected = ['REJECTED', 'CANCELLED'].includes(order.status);
-        const orderValue = order.totalAmount || 0;
+        const orderValue = order.totalAmount || order.grandTotal || 0;
+        const itemTotal = order.subtotal || orderValue;
+        const taxAmount = (order.sgstAmount || 0) + (order.cgstAmount || 0) + (order.igstAmount || 0);
         
-        const onlineAmt = (isVerified && order.collectedVia === 'ONLINE') ? orderValue : 0;
-        const cashAmt = (isVerified && order.collectedVia === 'CASH') ? orderValue : 0;
+        const onlineAmt = isVerified 
+          ? (order.collectedVia === 'SPLIT' ? (order.splitPayment?.onlineAmount || 0) : (order.collectedVia === 'ONLINE' ? orderValue : 0))
+          : 0;
+        const cashAmt = isVerified 
+          ? (order.collectedVia === 'SPLIT' ? (order.splitPayment?.cashAmount || 0) : (order.collectedVia === 'CASH' ? orderValue : 0))
+          : 0;
         const settledAmt = isVerified ? orderValue : 0;
         currentSettledBalance += settledAmt;
 
@@ -224,12 +228,14 @@ const generateReport = async (restaurant, orders, options = {}) => {
             order.tableNumber || '-',
             order.customerName || 'Walk-in',
             order.numberOfPersons || 1,
-            (order.items || []).map(i => `${i.name} x${i.quantity}`).join('\n'),
+            (order.items || []).map(i => `${i.name} - ₹${i.price || 0} x${i.quantity}`).join('\n'),
             (order.items || []).reduce((sum, item) => sum + (item.quantity || 0), 0),
             order.orderType || 'DINE-IN',
             order.collectedVia || 'N/A',
             order.paymentStatus || 'PENDING',
             order.status || 'N/A',
+            itemTotal,
+            taxAmount,
             orderValue,
             onlineAmt,
             cashAmt,
@@ -246,8 +252,8 @@ const generateReport = async (restaurant, orders, options = {}) => {
 
         const row = txSheet.addRow(rowData);
         row.getCell(7).alignment = { wrapText: true };
-        row.getCell(24).alignment = { wrapText: true }; 
-        [13, 14, 15, 16, 17, 18].forEach(colIndex => {
+        row.getCell(26).alignment = { wrapText: true }; 
+        [13, 14, 15, 16, 17, 18, 19, 20].forEach(colIndex => {
             row.getCell(colIndex).numFmt = '₹#,##0.00';
         });
 
@@ -255,7 +261,7 @@ const generateReport = async (restaurant, orders, options = {}) => {
         applyStatusHighlights(row.getCell(12), rowData[11], 'ORDER_STATUS');
         
         // Apply conditional formatting to 'Collected at' column (column 24)
-        const collectedAtCell = row.getCell(24);
+        const collectedAtCell = row.getCell(26);
         const orderStatus = String(order.status).toUpperCase();
         const paymentStatus = String(order.paymentStatus).toUpperCase();
         

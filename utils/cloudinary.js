@@ -99,17 +99,11 @@ exports.uploadRawToCloudinary = async (fileBuffer, filename, folder = 'digitalme
 // Get file from Cloudinary as buffer
 exports.getFileFromCloudinary = async (publicId) => {
   try {
-    // Generate signed URL for raw file
-    const signedUrl = cloudinary.utils.api_sign_url(
-      {
-        public_id: publicId,
-        resource_type: 'raw'
-      },
-      process.env.CLOUDINARY_API_SECRET
-    );
+
+    // Generate URL using cloudinary builder
+    const downloadUrl = cloudinary.url(`${publicId}.xlsx`, { resource_type: 'raw', secure: true });
+    console.log(`[Cloudinary] Fetching raw file from: ${downloadUrl}`);
     
-    // For raw files, we use the download URL
-    const downloadUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/raw/upload/${publicId}.xlsx`;
     
     const response = await fetch(downloadUrl);
     if (!response.ok) {

@@ -79,7 +79,7 @@ exports.getPublicMenu = async (req, res) => {
         restaurant: restaurantId,
         isActive: true 
       })
-        .select('name description price offerPrice images foodType isActive category discountPercentage isVeg isBestSeller')
+        .select('name description price images foodType isActive category isVeg isBestSeller')
         .sort({ category: 1, name: 1 })
         .lean(),
       table ? Table.findOne({ restaurant: restaurantId, tableNumber: table }).lean() : null

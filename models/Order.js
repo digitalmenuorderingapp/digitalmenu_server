@@ -17,14 +17,6 @@ const orderItemSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
-  originalPrice: {
-    type: Number,
-    min: 0
-  },
-  offerPrice: {
-    type: Number,
-    min: 0
-  },
   quantity: {
     type: Number,
     required: true,
@@ -139,8 +131,12 @@ const orderSchema = new mongoose.Schema({
   // Collected Information
   collectedVia: {
     type: String,
-    enum: ['CASH', 'ONLINE'],
+    enum: ['CASH', 'ONLINE', 'SPLIT'],
     set: v => (v === 'COUNTER' || v === 'CASH' || v === 'cash') ? 'CASH' : v?.toUpperCase()
+  },
+  splitPayment: {
+    cashAmount: { type: Number, default: 0 },
+    onlineAmount: { type: Number, default: 0 }
   },
   collectedAt: {
     type: Date,

@@ -50,7 +50,7 @@ exports.createOrder = async (req, res, next) => {
     // Fetch restaurant GST config
     const gstConfig = await GSTConfig.findOne({ restaurant: restaurantIdVal });
 
-    // Fetch menu items to get originalPrice and offerPrice
+    // Fetch menu items to validate items and prices
     const menuItemIds = items.map(item => item.itemId);
     const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
     const menuItemMap = new Map(menuItems.map(mi => [mi._id.toString(), mi]));
@@ -59,10 +59,7 @@ exports.createOrder = async (req, res, next) => {
     for (const item of items) {
       const menuItem = menuItemMap.get(item.itemId);
       if (menuItem) {
-        // Use frontend values if provided, otherwise fallback to menu item database
-        item.originalPrice = item.originalPrice || menuItem.price;
-        item.offerPrice = item.offerPrice !== undefined ? item.offerPrice : (menuItem.offerPrice || null);
-        item.price = item.offerPrice || item.originalPrice || menuItem.price;
+        item.price = menuItem.price;
       }
       const itemTotal = item.price * item.quantity;
       itemsSubtotal += itemTotal;
@@ -105,14 +102,13 @@ exports.createOrder = async (req, res, next) => {
     roundOff = roundedGrandTotal - grandTotal;
     console.log('[Order] Round off calculated:', roundOff, '(Rounded:', roundedGrandTotal, '- Actual:', grandTotal, ')');
 
-    // Enrich items with originalPrice, offerPrice, and tax percentages from GST config
+    // Enrich items with prices and tax percentages from GST config
     const enrichedItems = items.map(item => {
       return {
         ...item,
         itemId: item.itemId,
         name: item.name,
-        originalPrice: item.originalPrice || item.price,
-        offerPrice: item.offerPrice !== undefined ? item.offerPrice : null,
+        originalPrice: item.price,
         price: item.price,
         quantity: item.quantity,
         sgstPercentage: gstConfig && gstConfig.gstEnabled ? (gstConfig.sgstPercentage || 0) : 0,
@@ -277,16 +273,24 @@ exports.handleOrderAction = async (req, res, next) => {
         break;
 
       case "COLLECT_PAYMENT":
-        if (!['CASH', 'ONLINE'].includes(payload.method)) {
-          return res.status(400).json({ success: false, message: "Invalid collection method. Use CASH or ONLINE." });
+        if (!['CASH', 'ONLINE', 'SPLIT'].includes(payload.method)) {
+          return res.status(400).json({ success: false, message: "Invalid collection method. Use CASH, ONLINE, or SPLIT." });
         }
         update.paymentStatus = "VERIFIED";
         update.collectedVia = payload.method;
         update.collectedAt = new Date();
         if (payload.method === 'ONLINE') {
           update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+          update.splitPayment = undefined;
+        } else if (payload.method === 'SPLIT') {
+          update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+          update.splitPayment = {
+            cashAmount: Number(payload.splitCashAmount) || 0,
+            onlineAmount: Number(payload.splitOnlineAmount) || 0
+          };
         } else {
           update.utr = undefined; // Clear UTR for CASH collection
+          update.splitPayment = undefined;
         }
         update.paymentVerificationRequestbycustomer = undefined;
 
@@ -300,8 +304,16 @@ exports.handleOrderAction = async (req, res, next) => {
         update.collectedAt = new Date();
         if (clearMethod === 'ONLINE') {
           update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+          update.splitPayment = undefined;
+        } else if (clearMethod === 'SPLIT') {
+          update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
+          update.splitPayment = {
+            cashAmount: Number(payload.splitCashAmount) || 0,
+            onlineAmount: Number(payload.splitOnlineAmount) || 0
+          };
         } else {
           update.utr = undefined; // Clear UTR for CASH clearing
+          update.splitPayment = undefined;
         }
         update.paymentVerificationRequestbycustomer = undefined;
 

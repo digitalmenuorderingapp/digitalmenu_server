@@ -124,6 +124,10 @@ exports.syncDailyLedger = async (restaurantId, date) => {
         if (isVerified) {
           if (o.collectedVia === 'CASH') cashVerified += amt;
           else if (o.collectedVia === 'ONLINE') onlineVerified += amt;
+          else if (o.collectedVia === 'SPLIT') {
+            cashVerified += (o.splitPayment?.cashAmount || 0);
+            onlineVerified += (o.splitPayment?.onlineAmount || 0);
+          }
         }
 
         if (isServed) earnedRevenue += amt;
