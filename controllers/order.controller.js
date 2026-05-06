@@ -47,8 +47,12 @@ exports.createOrder = async (req, res, next) => {
 
     const restaurantIdVal = restaurantId || req.userId;
 
+    if (!restaurantIdVal) {
+      return res.status(400).json({ success: false, message: "Restaurant ID is required." });
+    }
+
     // Fetch restaurant GST config
-    const gstConfig = await GSTConfig.findOne({ restaurant: restaurantIdVal });
+    const gstConfig = await GSTConfig.findOne({ restaurant: restaurantIdVal }).catch(() => null);
 
     // Fetch menu items to validate items and prices
     const menuItemIds = items.map(item => item.itemId);
@@ -59,9 +63,11 @@ exports.createOrder = async (req, res, next) => {
     for (const item of items) {
       const menuItem = menuItemMap.get(item.itemId);
       if (menuItem) {
-        item.price = menuItem.price;
+        item.price = menuItem.price || item.price || 0;
       }
-      const itemTotal = item.price * item.quantity;
+      const itemPrice = parseFloat(item.price) || 0;
+      const itemQuantity = parseInt(item.quantity) || 1;
+      const itemTotal = itemPrice * itemQuantity;
       itemsSubtotal += itemTotal;
     }
 
@@ -89,18 +95,19 @@ exports.createOrder = async (req, res, next) => {
     }
 
     // Round taxes to 2 decimal places
-    totalSgst = Math.round(totalSgst * 100) / 100;
-    totalCgst = Math.round(totalCgst * 100) / 100;
-    totalIgst = Math.round(totalIgst * 100) / 100;
+    totalSgst = Math.round((totalSgst || 0) * 100) / 100;
+    totalCgst = Math.round((totalCgst || 0) * 100) / 100;
+    totalIgst = Math.round((totalIgst || 0) * 100) / 100;
 
     // Calculate grand total (taxable amount + taxes)
     grandTotal = taxableAmount + totalSgst + totalCgst + totalIgst;
-    console.log('[Order] Grand total calculated:', grandTotal, '(Taxable Amount:', taxableAmount, '+ Taxes:', totalSgst + totalCgst + totalIgst, ')');
+    
+    // Safety check for NaN
+    if (isNaN(grandTotal)) grandTotal = itemsSubtotal;
 
     // Calculate round off (difference between rounded grand total and actual grand total)
-    const roundedGrandTotal = Math.round(grandTotal);
-    roundOff = roundedGrandTotal - grandTotal;
-    console.log('[Order] Round off calculated:', roundOff, '(Rounded:', roundedGrandTotal, '- Actual:', grandTotal, ')');
+    const roundedGrandTotal = Math.round(grandTotal || 0);
+    roundOff = Math.round((roundedGrandTotal - grandTotal) * 100) / 100;
 
     // Enrich items with prices and tax percentages from GST config
     const enrichedItems = items.map(item => {
@@ -138,10 +145,10 @@ exports.createOrder = async (req, res, next) => {
       grandTotal: grandTotal,
       gstEnabled: gstConfig?.gstEnabled || false,
       paymentVerificationRequestbycustomer: {
-        applied: paymentMethod === 'ONLINE',
-        appliedUTR: (paymentMethod === 'ONLINE' && utr) ? utr.substring(0, 6) : ''
+        applied: paymentMethod?.toUpperCase() === 'ONLINE',
+        appliedUTR: (paymentMethod?.toUpperCase() === 'ONLINE' && utr) ? String(utr).substring(0, 6) : ''
       },
-      utr: utr ? utr.substring(0, 6) : '',
+      utr: utr ? String(utr).substring(0, 6) : '',
       orderType,
       numberOfPersons: orderType === 'dine-in' ? numberOfPersons : undefined,
       specialInstructions,
@@ -151,8 +158,8 @@ exports.createOrder = async (req, res, next) => {
       source: req.userId ? 'admin' : 'customer'
     });
 
-    // 2. Return response immediately (don't wait for async operations)
-    const basicOrder = order.toObject();
+    // 2. Return response immediately
+    const basicOrder = order.toJSON();
     basicOrder.transactions = []; // Will be populated async
 
     res.status(201).json({
@@ -162,27 +169,25 @@ exports.createOrder = async (req, res, next) => {
     });
 
     // 3. Do async work AFTER response (non-blocking)
-    // Fire-and-forget socket emission
     const io = req.app.get('io');
-    if (io) {
-      const targetId = restaurantIdVal;
-      const roomId = targetId?.toString();
+    if (io && restaurantIdVal) {
+      const roomId = restaurantIdVal.toString();
 
       // Persist and emit notification
-      await notificationService.send({
+      notificationService.send({
         recipient: roomId,
         recipientType: 'ADMIN',
         type: 'ORDER_NEW',
         title: 'New Order Received',
-        message: `Order #${order.orderNumber} placed for Table #${order.tableNumber}`,
+        message: `Order #${order.orderNumber} placed${order.tableNumber ? ` for Table #${order.tableNumber}` : ''}`,
         metadata: {
           orderId: order._id,
           orderNumber: order.orderNumber,
-          tableNumber: order.tableNumber,
+          tableNumber: order.tableNumber?.toString(),
           amount: order.totalAmount,
           orderData: basicOrder
         }
-      });
+      }).catch(err => console.error('[Notification] Background send failed:', err));
     }
 
   } catch (error) {
@@ -216,7 +221,9 @@ exports.handleOrderAction = async (req, res, next) => {
         update.collectedVia = "ONLINE";
         update.collectedAt = new Date();
         update.utr = payload.utr ? payload.utr.toString().slice(-6) : (order.paymentVerificationRequestbycustomer?.appliedUTR || order.utr);
-        update.paymentVerificationRequestbycustomer = undefined;
+        update['paymentVerificationRequestbycustomer.applied'] = false;
+        update['paymentVerificationRequestbycustomer.adminAskedretry'] = false;
+        update['paymentVerificationRequestbycustomer.appliedUTR'] = '';
 
         isPaymentAction = true;
         break;
@@ -229,11 +236,9 @@ exports.handleOrderAction = async (req, res, next) => {
           return res.status(400).json({ success: false, message: "Payment is already verified. Retry not needed." });
         }
         update.paymentStatus = "PENDING";
-        update.paymentVerificationRequestbycustomer = {
-          applied: false, // Customer must re-apply with new UTR
-          adminAskedretry: true,
-          retrycount: (order.paymentVerificationRequestbycustomer?.retrycount || 0) + 1
-        };
+        update['paymentVerificationRequestbycustomer.applied'] = false;
+        update['paymentVerificationRequestbycustomer.adminAskedretry'] = true;
+        update['paymentVerificationRequestbycustomer.retrycount'] = (order.paymentVerificationRequestbycustomer?.retrycount || 0) + 1;
         break;
 
       case "MARK_UNPAID":
@@ -241,7 +246,8 @@ exports.handleOrderAction = async (req, res, next) => {
         update.paymentStatus = "UNPAID";
         update.unpaidReason = payload.reason;
         update.utr = undefined; // Clear UTR on unpaid status
-        update.paymentVerificationRequestbycustomer = undefined; // Clear retry state
+        update['paymentVerificationRequestbycustomer.applied'] = false;
+        update['paymentVerificationRequestbycustomer.adminAskedretry'] = false;
 
         isPaymentAction = true;
         break;
@@ -263,11 +269,18 @@ exports.handleOrderAction = async (req, res, next) => {
         update.rejectionReason = payload.reason || "Order rejected by admin";
         break;
 
+      case "MARK_PREPARED":
+        if (order.status !== 'ACCEPTED') {
+          return res.status(400).json({ success: false, message: "Only ACCEPTED (Cooking) orders can be marked as prepared." });
+        }
+        update.status = "PREPARED";
+        break;
+
 
 
       case "COMPLETE_ORDER": // SERVE
-        if (!["ACCEPTED", "PLACED"].includes(order.status)) {
-          return res.status(400).json({ success: false, message: "Order must be PLACED or ACCEPTED to be served." });
+        if (!["ACCEPTED", "PLACED", "PREPARED"].includes(order.status)) {
+          return res.status(400).json({ success: false, message: "Order must be PLACED, ACCEPTED, or PREPARED to be served." });
         }
         update.status = "COMPLETED";
         break;
@@ -292,7 +305,8 @@ exports.handleOrderAction = async (req, res, next) => {
           update.utr = undefined; // Clear UTR for CASH collection
           update.splitPayment = undefined;
         }
-        update.paymentVerificationRequestbycustomer = undefined;
+        update['paymentVerificationRequestbycustomer.applied'] = false;
+        update['paymentVerificationRequestbycustomer.adminAskedretry'] = false;
 
         isPaymentAction = true;
         break;
@@ -311,11 +325,9 @@ exports.handleOrderAction = async (req, res, next) => {
             cashAmount: Number(payload.splitCashAmount) || 0,
             onlineAmount: Number(payload.splitOnlineAmount) || 0
           };
-        } else {
-          update.utr = undefined; // Clear UTR for CASH clearing
-          update.splitPayment = undefined;
         }
-        update.paymentVerificationRequestbycustomer = undefined;
+        update['paymentVerificationRequestbycustomer.applied'] = false;
+        update['paymentVerificationRequestbycustomer.adminAskedretry'] = false;
 
         isPaymentAction = true;
         break;
@@ -351,6 +363,7 @@ exports.handleOrderAction = async (req, res, next) => {
       const typeMap = {
         'ACCEPT_ORDER': 'ORDER_ACCEPTED',
         'REJECT_ORDER': 'ORDER_REJECTED',
+        'MARK_PREPARED': 'ORDER_PREPARED',
         'COMPLETE_ORDER': 'ORDER_COMPLETED',
         'VERIFY_PAYMENT': 'PAYMENT_VERIFIED',
         'COLLECT_PAYMENT': 'PAYMENT_VERIFIED',
@@ -373,6 +386,7 @@ exports.handleOrderAction = async (req, res, next) => {
       // Construct more descriptive message
       let displayMessage = `Order status changed to ${update.status || order.status}`;
       if (action === 'ACCEPT_ORDER') displayMessage = `Order #${order.orderNumber} Accepted for Table #${order.tableNumber}`;
+      else if (action === 'MARK_PREPARED') displayMessage = `Order #${order.orderNumber} (Table #${order.tableNumber}) is now PREPARED/Ready`;
       else if (action === 'REJECT_ORDER') displayMessage = `Order #${order.orderNumber} Rejected: ${update.rejectionReason}`;
       else if (action === 'COMPLETE_ORDER') displayMessage = `Order #${order.orderNumber} Served/Completed`;
       else if (action === 'VERIFY_PAYMENT' || action === 'COLLECT_PAYMENT' || action === 'CLEAR_DUES') displayMessage = `Payment Received for Order #${order.orderNumber} (Table #${order.tableNumber})`;
@@ -447,7 +461,8 @@ exports.getOrdersByDevice = async (req, res, next) => {
       cancellationReason: 1, unpaidReason: 1, feedback: 1, restaurant: 1,
       // Tax and billing fields
       subtotal: 1, taxableAmount: 1, sgstAmount: 1, cgstAmount: 1, igstAmount: 1,
-      serviceChargeAmount: 1, roundOff: 1, grandTotal: 1, gstEnabled: 1
+      serviceChargeAmount: 1, roundOff: 1, grandTotal: 1, gstEnabled: 1,
+      paymentVerificationRequestbycustomer: 1
     };
 
     const orders = await Order.find(query)
@@ -724,6 +739,8 @@ exports.retryPayment = async (req, res, next) => {
     order.isCollected = false;
     order.paymentVerificationRequestbycustomer.retrycount = (order.paymentVerificationRequestbycustomer.retrycount || 0) + 1;
 
+    // Explicitly mark as modified for nested object persistence
+    order.markModified('paymentVerificationRequestbycustomer');
     await order.save();
 
     const enrichedOrder = await getEnrichedOrder(order);

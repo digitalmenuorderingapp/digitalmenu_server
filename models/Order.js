@@ -122,7 +122,7 @@ const orderSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['PLACED', 'ACCEPTED', 'REJECTED', 'CANCELLED', 'COMPLETED'],
+    enum: ['PLACED', 'ACCEPTED', 'PREPARED', 'REJECTED', 'CANCELLED', 'COMPLETED'],
     default: 'PLACED',
     index: true,
     set: v => v ? v.toUpperCase() : v
@@ -145,18 +145,10 @@ const orderSchema = new mongoose.Schema({
 
   // Flags
   paymentVerificationRequestbycustomer: {
-    type: {
-      applied: { type: Boolean, default: false },
-      adminAskedretry: { type: Boolean, default: false },
-      retrycount: { type: Number, default: 0 },
-      appliedUTR: { type: String, default: '' }
-    },
-    default: () => ({
-      applied: false,
-      adminAskedretry: false,
-      retrycount: 0,
-      appliedUTR: ''
-    })
+    applied: { type: Boolean, default: false },
+    adminAskedretry: { type: Boolean, default: false },
+    retrycount: { type: Number, default: 0 },
+    appliedUTR: { type: String, default: '' }
   },
 
   paymentStatus: {

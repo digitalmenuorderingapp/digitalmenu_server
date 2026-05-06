@@ -1,6 +1,7 @@
 const RestaurantAdmin = require('../models/RestaurantAdmin');
 const MenuItem = require('../models/MenuItem');
 const Table = require('../models/Table');
+const GSTConfig = require('../models/GSTConfig');
 
 /**
  * @desc    Get restaurant details by ID for public view
@@ -30,6 +31,9 @@ exports.getRestaurantDetails = async (req, res) => {
       });
     }
 
+    // Fetch GST config
+    const gstConfig = await GSTConfig.findOne({ restaurant: id }).lean();
+
     // Return restaurant details
     res.status(200).json({
       success: true,
@@ -41,7 +45,8 @@ exports.getRestaurantDetails = async (req, res) => {
         address: restaurant.address,
         phone: restaurant.phone,
         motto: restaurant.motto,
-        logo: restaurant.logo
+        logo: restaurant.logo,
+        gstConfig: gstConfig || { gstEnabled: false, serviceChargeEnabled: false }
       }
     });
 
@@ -71,7 +76,7 @@ exports.getPublicMenu = async (req, res) => {
     }
 
     // Run queries in parallel for speed
-    const [restaurant, menuItems, tableDoc] = await Promise.all([
+    const [restaurant, menuItems, tableDoc, gstConfig] = await Promise.all([
       RestaurantAdmin.findById(restaurantId)
         .select('restaurantName ownerName logo motto')
         .lean(),
@@ -82,7 +87,8 @@ exports.getPublicMenu = async (req, res) => {
         .select('name description price images foodType isActive category isVeg isBestSeller')
         .sort({ category: 1, name: 1 })
         .lean(),
-      table ? Table.findOne({ restaurant: restaurantId, tableNumber: table }).lean() : null
+      table ? Table.findOne({ restaurant: restaurantId, tableNumber: table }).lean() : null,
+      GSTConfig.findOne({ restaurant: restaurantId }).lean()
     ]);
 
     if (!restaurant) {
@@ -114,7 +120,8 @@ exports.getPublicMenu = async (req, res) => {
         },
         tableNumber: table,
         tableCapacity: tableDoc?.seats || 8,
-        menuItems: categorizedItems
+        menuItems: categorizedItems,
+        gstConfig: gstConfig || { gstEnabled: false, serviceChargeEnabled: false }
       }
     });
 
