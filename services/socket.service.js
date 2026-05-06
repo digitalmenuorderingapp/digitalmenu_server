@@ -21,7 +21,7 @@ class SocketService {
         credentials: true,
         methods: ['GET', 'POST']
       },
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
       pingTimeout: 60000,
       pingInterval: 25000
     });

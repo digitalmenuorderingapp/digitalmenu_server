@@ -33,6 +33,12 @@ const allowedOrigins = [
   ...envOrigins,
   'https://digitalmenuorder.vercel.app',
   'https://digitalmenu-superadmin.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:7000',
+  'http://localhost:7001',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:7000',
+  'http://127.0.0.1:7001',
 ].filter(origin => origin && typeof origin === 'string')
   .map(origin => origin.trim().replace(/\/$/, ''));
 
